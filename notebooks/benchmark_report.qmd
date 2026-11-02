@@ -1,0 +1,224 @@
+---
+title: "cytoJointR vs COMPASS vs polyICSFlow: detection benchmark"
+format:
+  html:
+    embed-resources: true
+    code-fold: true
+execute:
+  warning: false
+---
+
+```{r}
+#| label: parameters
+# Parameters -------------------------------------------------------------------
+RUN_DIR <- Sys.getenv("BENCH_RUN_DIR", "runs/2026-11-02_benchmark") # replicates and scenarios.tsv, relative to the repo root
+SUMMARY_DIR <- Sys.getenv("BENCH_SUMMARY_DIR", "runs/2026-11-02_benchmark-summary") # 08_summarise-benchmark.R tables
+COVERAGE_TARGET <- 0.9 # nominal level of the cytoJointR interval
+```
+
+```{r}
+#| label: setup
+suppressPackageStartupMessages({
+  library(dplyr)
+  library(forcats)
+  library(ggplot2)
+  library(purrr)
+  library(readr)
+  library(stringr)
+  library(tidyr)
+})
+theme_set(theme_bw(base_size = 8))
+read_run <- \(f) read_tsv(file.path(here::here(SUMMARY_DIR), f), show_col_types = FALSE)
+scenarios <- read_tsv(file.path(here::here(RUN_DIR), "scenarios.tsv"), show_col_types = FALSE)
+scenario_levels <- scenarios$scenario_id
+# One palette keyed by method label; an unknown label fails.
+METHOD_COLOURS <- c(
+  cytoJointR = "#D55E00",
+  COMPASS_default = "#0072B2",
+  COMPASS_nofilter = "#56B4E9",
+  polyICSFlow_clipped = "#009E73",
+  polyICSFlow_unclipped = "#999999"
+)
+as_method <- \(x) {
+  stopifnot("unknown method label" = all(x %in% names(METHOD_COLOURS)))
+  fct(x, levels = names(METHOD_COLOURS))
+}
+tidy_detector <- \(d) {
+  d |>
+    separate_wider_delim(detector, " ", names = c("method", "score")) |>
+    mutate(method = as_method(method), scenario_id = fct(scenario_id, levels = scenario_levels))
+}
+fmt <- \(x, se) if_else(is.na(x), "-", sprintf("%.3f (%.3f)", x, se))
+```
+
+## Completion
+
+Every scenario and seed that finished is counted here; a gap is a failed task, and COMPASS failures are listed by variant.
+
+```{r}
+read_run("replicate_status.tsv") |>
+  summarise(
+    expected = n(),
+    cytoJointR_COMPASS_done = sum(done_a),
+    polyICSFlow_done = sum(done_b),
+    COMPASS_default_failed = sum(status_COMPASS_default == "failed", na.rm = TRUE),
+    COMPASS_nofilter_failed = sum(status_COMPASS_nofilter == "failed", na.rm = TRUE),
+    .by = scenario_id
+  ) |>
+  knitr::kable()
+```
+
+## Scenarios and achieved truth
+
+The table gives the solved baseline and effect targets, and the true donor RMS (fraction of parent cells) actually drawn across all replicates.
+
+```{r}
+scenarios |>
+  select(scenario_id, generator, target_baseline = baseline, target_rms = rms) |>
+  left_join(read_run("truth_summary.tsv"), join_by(scenario_id), relationship = "one-to-one") |>
+  mutate(across(where(is.numeric), \(x) signif(x, 3))) |>
+  knitr::kable()
+```
+
+## ROC curves
+
+Each panel pools the donors of all seeds, with responders of the scenario against donors of the null scenario (first figure) or against the scenario's own non-responders (second figure, only where both exist); colour is the method, with cytoJointR P(RMS > eps), COMPASS Response() and polyICSFlow clipped net as its score.
+
+```{r}
+#| fig-width: 7.5
+#| fig-height: 5
+ROC_SCORES <- c("P_RMS_gt_eps", "Response", "net_sum") # one score per method in the ROC figures; every score is in the AUC table
+roc <- read_run("roc_curves.tsv") |>
+  tidy_detector() |>
+  filter(score %in% ROC_SCORES, method != "polyICSFlow_unclipped")
+plot_roc <- \(cmp) {
+  ggplot(filter(roc, comparison == cmp), aes(fpr, tpr, colour = method)) +
+    geom_step(linewidth = 0.4) +
+    geom_abline(slope = 1, intercept = 0, colour = "grey60", linetype = "dotted") +
+    scale_colour_manual(values = METHOD_COLOURS, drop = FALSE) +
+    facet_wrap(vars(scenario_id), nrow = 2) +
+    coord_equal() +
+    labs(x = "False positive rate", y = "True positive rate")
+}
+plot_roc("vs_null")
+```
+
+```{r}
+#| fig-width: 7.5
+#| fig-height: 3
+plot_roc("within")
+```
+
+## AUC
+
+AUC is the pooled Mann-Whitney AUC over donors and seeds, with the standard error from resampling seeds in brackets; `-` means one class is absent.
+
+```{r}
+#| results: asis
+auc <- read_run("auc.tsv") |> tidy_detector()
+for (cmp in c("vs_null", "within")) {
+  cat("\n\n**", cmp, "**\n\n")
+  auc |>
+    filter(comparison == cmp) |>
+    mutate(cell = fmt(auc, se)) |>
+    select(method, score, scenario_id, cell) |>
+    pivot_wider(names_from = scenario_id, values_from = cell) |>
+    arrange(method, score) |>
+    knitr::kable() |>
+    print()
+}
+```
+
+## Detection at the conventional rules
+
+Sensitivity is the fraction of responders called and specificity the fraction of non-responders not called, at cytoJointR P > 0.95, COMPASS Response() > 0.5 (our choice, COMPASS gives no rule) and polyICSFlow clipped net > 0.
+
+```{r}
+read_run("rules.tsv") |>
+  mutate(cell = fmt(estimate, se), scenario_id = fct(scenario_id, levels = scenario_levels)) |>
+  select(detector, rate, scenario_id, cell) |>
+  pivot_wider(names_from = scenario_id, values_from = cell) |>
+  arrange(rate, detector) |>
+  knitr::kable()
+```
+
+## Magnitude of the donor RMS
+
+Each grey point is one seed's bias or RMSE of the estimated donor RMS against the truth (fraction scale), and the black bar is the mean over seeds.
+
+```{r}
+#| fig-width: 8
+#| fig-height: 5
+mag <- read_run("magnitude_replicate.tsv") |>
+  mutate(method = as_method(method), scenario_id = fct(scenario_id, levels = scenario_levels)) |>
+  pivot_longer(c(bias, rmse), names_to = "metric", values_to = "value")
+ggplot(mag, aes(method, value)) +
+  geom_hline(data = tibble(metric = "bias"), aes(yintercept = 0), linetype = "dashed") +
+  geom_point(colour = "grey50", alpha = 0.6, size = 0.6, position = position_jitter(width = 0.2, height = 0, seed = 1)) +
+  stat_summary(fun = mean, geom = "crossbar", width = 0.6, linewidth = 0.2) +
+  facet_grid(metric ~ scenario_id, scales = "free_y") +
+  labs(x = NULL, y = "Estimate - truth (fraction of parent cells)") +
+  theme(axis.text.x = element_text(angle = 60, hjust = 1))
+```
+
+The cytoJointR 90% interval covers the true donor RMS in the fraction of donors below, with the across-seed SE.
+
+```{r}
+read_run("magnitude.tsv") |>
+  filter(method == "cytoJointR") |>
+  mutate(coverage = fmt(coverage, coverage_se), scenario_id = fct(scenario_id, levels = scenario_levels)) |>
+  arrange(scenario_id) |>
+  select(scenario_id, n_seeds, coverage) |>
+  knitr::kable()
+```
+
+## Pattern-level detection
+
+AUC over donor by pattern, with responding patterns defined by the true change above the pattern threshold; COMPASS patterns removed by its filter score 0, and `-` means one class is absent.
+
+```{r}
+pattern_auc <- read_run("pattern_auc.tsv") |> tidy_detector()
+pattern_auc |>
+  mutate(cell = fmt(auc, se)) |>
+  select(method, score, scenario_id, cell) |>
+  pivot_wider(names_from = scenario_id, values_from = cell) |>
+  arrange(method, score) |>
+  knitr::kable()
+```
+
+```{r}
+#| fig-width: 7.5
+#| fig-height: 3
+ggplot(drop_na(pattern_auc, auc), aes(auc, scenario_id, colour = method, shape = score)) +
+  geom_pointrange(aes(xmin = auc - se, xmax = auc + se), size = 0.2, position = position_dodge(width = 0.6)) +
+  scale_colour_manual(values = METHOD_COLOURS, drop = FALSE) +
+  labs(x = "Pattern-level AUC (point, +- 1 SE over seeds)", y = NULL)
+```
+
+## Runtime
+
+Each grey point is one replicate's wall-clock seconds for the method (log scale), the black bar is the median, and the table gives the CPUs used.
+
+```{r}
+#| fig-width: 5
+#| fig-height: 3
+rt <- read_run("runtime_replicate.tsv") |> mutate(method = fct(method))
+ggplot(rt, aes(method, seconds)) +
+  geom_point(colour = "grey50", alpha = 0.5, size = 0.6, position = position_jitter(width = 0.2, height = 0, seed = 1)) +
+  stat_summary(fun = median, geom = "crossbar", width = 0.6, linewidth = 0.2) +
+  scale_y_log10() +
+  labs(x = NULL, y = "Wall-clock seconds per replicate")
+read_run("runtime.tsv") |>
+  mutate(across(where(is.numeric), \(x) signif(x, 3))) |>
+  knitr::kable()
+```
+
+## cytoJointR convergence
+
+R-hat above 1.01, bulk ESS below 400 or any divergence flags a fit; all fits stay in every metric above.
+
+```{r}
+read_run("diagnostics.tsv") |>
+  mutate(across(where(is.numeric), \(x) signif(x, 3))) |>
+  knitr::kable()
+```

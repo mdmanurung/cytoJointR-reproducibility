@@ -1,0 +1,307 @@
+---
+title: "cytoJointR model redesign: candidate models against COMPASS and polyICSFlow"
+format:
+  html:
+    embed-resources: true
+    code-fold: true
+execute:
+  warning: false
+---
+
+```{r}
+#| label: parameters
+# Parameters -------------------------------------------------------------------
+SUMMARY_DIR <- Sys.getenv("REDESIGN_SUMMARY_DIR", "runs/2026-11-02_redesign-summary") # 08_summarise-benchmark.R tables, relative to the repo root
+DECISION_DIR <- Sys.getenv("REDESIGN_DECISION_DIR", "") # 11_apply-decision-rule.R output; empty to skip the decision section
+COVERAGE_TARGET <- 0.9 # nominal level of the credible interval
+COVERAGE_BAND <- c(0.85, 0.97) # pass band of the decision rule (plan, rule 1)
+FALSE_SIGN_MAX <- 0.07 # pass limit of the decision rule (plan, rule 1)
+CAL_SCORES <- c("RMS", "CPS", "CCS") # scores of the decision rule
+```
+
+```{r}
+#| label: setup
+suppressPackageStartupMessages({
+  library(dplyr)
+  library(forcats)
+  library(ggplot2)
+  library(purrr)
+  library(readr)
+  library(stringr)
+  library(tidyr)
+})
+theme_set(theme_bw(base_size = 8))
+read_run <- \(f) read_tsv(file.path(here::here(SUMMARY_DIR), f), show_col_types = FALSE)
+roles <- read_run("scenario_roles.tsv")
+scenario_levels <- roles |> filter(role == "main") |> pull(scenario_id)
+# One palette keyed by method label; an unknown label fails. Reference methods are grey-blue / green.
+METHOD_COLOURS <- c(
+  C0 = "#999999",
+  C1 = "#D55E00",
+  C2 = "#CC79A7",
+  C2phi = "#E69F00",
+  COMPASS_default = "#0072B2",
+  COMPASS_nofilter = "#56B4E9",
+  polyICSFlow_clipped = "#009E73",
+  polyICSFlow_unclipped = "#BBBBBB"
+)
+as_method <- \(x) {
+  stopifnot("unknown method label" = all(x %in% names(METHOD_COLOURS)))
+  fct(x, levels = names(METHOD_COLOURS))
+}
+tidy_scenario <- \(d) mutate(d, scenario_id = fct(scenario_id, levels = scenario_levels), model = as_method(model))
+dodge <- position_dodge(width = 0.7)
+```
+
+## Completion
+
+Every scenario and seed that finished is counted; a model that the package could not fit is `not_run` and has no points.
+
+```{r}
+read_run("model_status.tsv") |>
+  knitr::kable()
+```
+
+## Coverage
+
+Each point is one replicate (24 donors, or the 100-donor cell excluded here); the bar is the mean over seeds with the seed-clustered SE; the dotted lines are the pass band. Rows are the truth the interval is scored against: the realised sample probability (the `cj_draws` estimand) and the structured mean.
+
+```{r}
+#| fig-width: 9
+#| fig-height: 7
+cov_points <- read_run("calibration_replicate.tsv") |>
+  filter(draws == "sample", grain == "global", score %in% CAL_SCORES, scenario_id %in% scenario_levels) |>
+  tidy_scenario()
+cov_summary <- read_run("calibration.tsv") |>
+  filter(draws == "sample", grain == "global", score %in% CAL_SCORES, scenario_id %in% scenario_levels) |>
+  tidy_scenario()
+ggplot(cov_summary, aes(scenario_id, coverage, colour = model)) +
+  geom_point(
+    data = cov_points,
+    aes(y = coverage),
+    position = position_jitterdodge(jitter.width = 0.1, dodge.width = 0.7, seed = 1),
+    size = 0.3,
+    alpha = 0.3
+  ) +
+  geom_pointrange(
+    aes(ymin = coverage - coverage_se, ymax = coverage + coverage_se),
+    position = dodge,
+    size = 0.25
+  ) +
+  geom_hline(yintercept = c(COVERAGE_BAND, COVERAGE_TARGET), linetype = "dotted", colour = "grey50") +
+  scale_colour_manual(values = METHOD_COLOURS, drop = TRUE) +
+  facet_grid(rows = vars(target, score)) +
+  coord_cartesian(ylim = c(0, 1)) +
+  labs(x = NULL, y = "Coverage of the 90% interval (donors x contrasts per seed)") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+### Structured draws against the structured truth
+
+The overdispersed models also return the structured mean `mu` (draws = structured). Coverage of those draws against the structured truth, mean over scenarios; `n_scenarios` counts the scenarios averaged.
+
+```{r}
+read_run("calibration.tsv") |>
+  filter(grain == "global", score %in% CAL_SCORES, scenario_id %in% scenario_levels) |>
+  filter((draws == "structured" & target == "struct") | (draws == "sample" & target == "struct")) |>
+  summarise(coverage = mean(coverage), n_scenarios = n_distinct(scenario_id), .by = c(model, draws, score)) |>
+  mutate(coverage = signif(coverage, 3)) |>
+  arrange(score, model, draws) |>
+  knitr::kable()
+```
+
+## RMSE and interval width
+
+RMSE is the root mean squared error of the donor-level score estimate, one point per replicate, with the pooled RMSE as a bar; the width ratio is the mean interval width relative to C0 in the same scenario and target.
+
+```{r}
+#| fig-width: 9
+#| fig-height: 6
+rmse_points <- cov_points |> mutate(rmse = sqrt(mse)) |> filter(score == "RMS")
+rmse_summary <- cov_summary |> filter(score == "RMS")
+ggplot(rmse_summary, aes(scenario_id, rmse, colour = model)) +
+  geom_point(
+    data = rmse_points,
+    position = position_jitterdodge(jitter.width = 0.1, dodge.width = 0.7, seed = 1),
+    size = 0.3,
+    alpha = 0.3
+  ) +
+  geom_pointrange(aes(ymin = rmse - rmse_se, ymax = rmse + rmse_se), position = dodge, size = 0.25) +
+  scale_colour_manual(values = METHOD_COLOURS, drop = TRUE) +
+  scale_y_log10() +
+  facet_grid(rows = vars(target)) +
+  labs(x = NULL, y = "RMSE of donor RMS (fraction of parent cells, log scale)") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+```{r}
+#| fig-width: 9
+#| fig-height: 5
+ggplot(cov_summary |> filter(score %in% CAL_SCORES, model != "C0"), aes(scenario_id, width_ratio, colour = model)) +
+  geom_point(position = dodge, size = 0.8) +
+  geom_hline(yintercept = 1, linetype = "dotted", colour = "grey50") +
+  scale_colour_manual(values = METHOD_COLOURS, drop = TRUE) +
+  scale_y_log10() +
+  facet_grid(rows = vars(target, score)) +
+  labs(x = NULL, y = "Interval width relative to C0 (log scale)") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+## False signs
+
+A false sign is a donor-contrast whose true score is exactly zero (null cells, mixture non-responders) while the model puts more than 95% probability on a nonzero change in either direction. Points are replicates; the bar is the mean with the seed-clustered SE; the dotted line is the decision limit.
+
+```{r}
+#| fig-width: 9
+#| fig-height: 5
+fs_points <- read_run("false_sign_replicate.tsv") |>
+  filter(draws == "sample", grain == "global", score %in% CAL_SCORES) |>
+  tidy_scenario()
+fs_summary <- read_run("false_sign.tsv") |>
+  filter(draws == "sample", grain == "global", score %in% CAL_SCORES) |>
+  tidy_scenario()
+ggplot(fs_summary, aes(scenario_id, false_sign, colour = model)) +
+  geom_point(
+    data = fs_points,
+    position = position_jitterdodge(jitter.width = 0.1, dodge.width = 0.7, seed = 1),
+    size = 0.3,
+    alpha = 0.3
+  ) +
+  geom_pointrange(aes(ymin = false_sign - false_sign_se, ymax = false_sign + false_sign_se), position = dodge, size = 0.25) +
+  geom_hline(yintercept = FALSE_SIGN_MAX, linetype = "dotted", colour = "grey50") +
+  scale_colour_manual(values = METHOD_COLOURS, drop = TRUE) +
+  facet_grid(rows = vars(target, score)) +
+  labs(x = NULL, y = "False sign rate (rows with zero truth)") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+## IPF failures
+
+The share of posterior draws whose counterfactual (IPF) failed, per scenario and model; the rule requires less than 1%.
+
+```{r}
+read_run("ipf.tsv") |>
+  filter(draws == "sample") |>
+  mutate(ipf_failed_rate = signif(ipf_failed_rate, 3)) |>
+  pivot_wider(id_cols = scenario_id, names_from = model, values_from = ipf_failed_rate) |>
+  knitr::kable()
+```
+
+## Pattern-level coverage
+
+Coverage of the exact-pattern contributions by pattern degree, against the realised sample truth; degree 3 and higher is the C3 trigger.
+
+```{r}
+#| fig-width: 9
+#| fig-height: 6
+pat_summary <- read_run("calibration.tsv") |>
+  filter(draws == "sample", grain == "pattern", target == "sample", scenario_id %in% scenario_levels) |>
+  tidy_scenario() |>
+  mutate(degree = fct(as.character(degree)))
+ggplot(pat_summary, aes(scenario_id, coverage, colour = model, shape = degree)) +
+  geom_pointrange(
+    aes(ymin = coverage - coverage_se, ymax = coverage + coverage_se),
+    position = position_dodge(width = 0.8),
+    size = 0.2
+  ) +
+  geom_hline(yintercept = COVERAGE_TARGET, linetype = "dotted", colour = "grey50") +
+  scale_colour_manual(values = METHOD_COLOURS, drop = TRUE) +
+  facet_grid(rows = vars(score)) +
+  coord_cartesian(ylim = c(0, 1)) +
+  labs(x = NULL, y = "Pattern coverage (seed mean, SE bars)") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+## Visit change
+
+Coverage of the v1 to v2 change in the two-visit cell, per donor and for the equal-donor average.
+
+```{r}
+change <- read_run("change.tsv")
+if (nrow(change) > 0) {
+  change |>
+    filter(score %in% c(CAL_SCORES, "marker_magnitude")) |>
+    mutate(across(where(is.numeric), \(x) signif(x, 3))) |>
+    knitr::kable()
+}
+```
+
+## Detection AUC with COMPASS and polyICSFlow
+
+Each point is the AUC of one replicate; the bar is the pooled AUC with the seed-bootstrap SE. Responders are those with true RMS above 1e-4 (the realised sample truth); COMPASS and polyICSFlow are the reference lines of the plan.
+
+```{r}
+#| fig-width: 9
+#| fig-height: 7
+AUC_SCORES <- c("P_RMS_gt_eps", "Response", "net_sum") # one score per method; every score is in auc.tsv
+tidy_detector <- \(d) {
+  d |>
+    separate_wider_delim(detector, " ", names = c("model", "score")) |>
+    filter(score %in% AUC_SCORES, target == "sample") |>
+    mutate(scenario_id = fct(scenario_id, levels = scenario_levels), model = as_method(model))
+}
+auc_summary <- read_run("auc.tsv") |> tidy_detector() |> filter(comparison == "vs_null", !is.na(scenario_id))
+auc_points <- read_run("auc_replicate.tsv") |> tidy_detector() |> filter(comparison == "vs_null", !is.na(scenario_id))
+ggplot(auc_summary, aes(scenario_id, auc, colour = model)) +
+  geom_point(
+    data = auc_points,
+    position = position_jitterdodge(jitter.width = 0.1, dodge.width = 0.7, seed = 1),
+    size = 0.3,
+    alpha = 0.3
+  ) +
+  geom_pointrange(aes(ymin = auc - se, ymax = auc + se), position = dodge, size = 0.25) +
+  geom_hline(yintercept = 0.5, linetype = "dotted", colour = "grey50") +
+  scale_colour_manual(values = METHOD_COLOURS, drop = TRUE) +
+  coord_cartesian(ylim = c(0, 1)) +
+  labs(x = NULL, y = "AUC, responders vs null donors") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+## Runtime
+
+Seconds per replicate and method (fit plus scoring for the candidates; CPUs differ: 4 for the Stan fits, 1 for C0, COMPASS and polyICSFlow). The 100-donor cell is the runtime-only cell. Points are replicates; the bar is the median with the interquartile range.
+
+```{r}
+#| fig-width: 9
+#| fig-height: 4
+rt_points <- read_run("runtime_replicate.tsv") |> mutate(model = as_method(method))
+rt_summary <- read_run("runtime.tsv") |> mutate(model = as_method(method))
+ggplot(rt_summary, aes(scenario_id, median_s, colour = model)) +
+  geom_point(
+    data = rt_points,
+    aes(y = seconds),
+    position = position_jitterdodge(jitter.width = 0.1, dodge.width = 0.7, seed = 1),
+    size = 0.3,
+    alpha = 0.3
+  ) +
+  geom_pointrange(aes(ymin = q25_s, ymax = q75_s), position = dodge, size = 0.25) +
+  scale_colour_manual(values = METHOD_COLOURS, drop = TRUE) +
+  scale_y_log10() +
+  labs(x = NULL, y = "Seconds per replicate (log scale)") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+## Convergence
+
+Candidate fits that missed R-hat 1.01, bulk ESS 400 or had divergences, and the median phi of the overdispersed models.
+
+```{r}
+read_run("diagnostics.tsv") |>
+  mutate(across(where(is.numeric), \(x) signif(x, 3))) |>
+  knitr::kable()
+```
+
+## Decision
+
+The decision rule of the plan, applied mechanically to the A/B/C summary before the held-out generator was opened.
+
+```{r}
+#| results: asis
+if (nzchar(DECISION_DIR)) {
+  cat(readLines(file.path(here::here(DECISION_DIR), "decision.md")), sep = "\n")
+  read_tsv(file.path(here::here(DECISION_DIR), "decision.tsv"), show_col_types = FALSE) |>
+    mutate(across(where(is.numeric), \(x) signif(x, 3))) |>
+    knitr::kable() |>
+    print()
+}
+```

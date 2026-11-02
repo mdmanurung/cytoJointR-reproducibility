@@ -6,7 +6,8 @@
 #
 # sc:   one row of scenarios.tsv
 # gamma, truth: the M1 truth list that gives the mean structure (built in 03)
-# Returns list(data = cj_data, p = true probabilities, samples by patterns), like cj_simulate_counts().
+# Returns list(data = cj_data, p = realised sample probabilities, p_struct = the structured mean before the noise,
+# both samples by patterns), like cj_simulate_counts().
 simulate_generator_b <- function(sc, truth, seed) {
   base <- cj_simulate_counts(
     n_donors = sc$n_donors,
@@ -55,5 +56,9 @@ simulate_generator_b <- function(sc, truth, seed) {
     base$data$bits,
     provenance = list(generator = "B (logistic-normal saturated)", seed = seed)
   )
-  list(data = data, p = `dimnames<-`(p, dimnames(counts)))
+  list(
+    data = data,
+    p = `dimnames<-`(p, dimnames(counts)),
+    p_struct = `dimnames<-`(base$p, dimnames(counts))
+  )
 }
