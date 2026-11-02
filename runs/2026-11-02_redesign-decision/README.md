@@ -50,3 +50,14 @@ until C2's CPS over-coverage is fixed, was declined.
   Dirichlet residual may be inflating ratio-type scores.
 
 Held-out generator D was opened only after this decision.
+
+## Corrections (2026-11-02, same day, after cross-checking the summary tables)
+
+- The best CCS coverage under generator B is 0.39 (C1, J = 3), not the 0.34
+  quoted above and in the post hoc commit message. The range across models is
+  0.27 to 0.39. The conclusion, that no model covers CCS under B, stands.
+- C2's CPS is conservative only under generators A and C (0.98 to 1.00).
+  Under generator B it is slightly anti-conservative: 0.81 to 0.84 against a
+  nominal 0.90. That is inside the band once 2 seed-clustered SEs are counted,
+  so the cell passes. "CPS conservative" must therefore not be stated without
+  this qualifier.
