@@ -39,7 +39,10 @@ pauc <- function(score, truth, fmax = PAUC_FMAX, roc = roc_pts(score, truth)) {
   ))
 }
 
-det_stats <- function(score, truth) {
+det_stats <- function(score, truth, full = TRUE) {
+  if (!full) {
+    return(c(auc = auc_rank(score, truth)))
+  }
   roc <- roc_pts(score, truth)
   c(
     auc = auc_rank(score, truth),
@@ -49,15 +52,18 @@ det_stats <- function(score, truth) {
   )
 }
 
-boot_det <- function(a, truth, b = NULL, B = 2000L, seed = 1L) {
+boot_det <- function(a, truth, b = NULL, B = 2000L, seed = 1L, full = TRUE) {
   set.seed(seed)
   i1 <- which(truth)
   i0 <- which(!truth)
-  est <- det_stats(a, truth) - if (is.null(b)) 0 else det_stats(b, truth)
+  est <- det_stats(a, truth, full) -
+    if (is.null(b)) 0 else det_stats(b, truth, full)
   draws <- replicate(B, {
     i <- c(sample(i1, replace = TRUE), sample(i0, replace = TRUE))
-    det_stats(a[i], truth[i]) - if (is.null(b)) 0 else det_stats(b[i], truth[i])
+    det_stats(a[i], truth[i], full) -
+      if (is.null(b)) 0 else det_stats(b[i], truth[i], full)
   })
+  draws <- matrix(draws, nrow = length(est))
   tibble(
     stat = names(est),
     value = unname(est),
@@ -91,8 +97,73 @@ seed_boot <- function(d, stat, use_b = FALSE, B = 1000L, seed = 1L) {
   )
   tibble(
     value = g(d),
-    lower = quantile(draws, 0.025, na.rm = TRUE),
-    upper = quantile(draws, 0.975, na.rm = TRUE),
+    lower = unname(quantile(draws, 0.025, na.rm = TRUE)),
+    upper = unname(quantile(draws, 0.975, na.rm = TRUE)),
     n_seeds = length(rows)
   )
+}
+
+# Cached comparator scores of the simulation replicates (written by 06 and 07 in `run`), one row per donor:
+# scenario_id, seed, donor_id, responder_sample, true_rms_sample, compass (COMPASS_default FS, 0 when the fit
+# failed, as 08), polyics (clipped net sum), polyics_mag (unclipped net sum).
+sim_comparators <- function(run, scenarios, seeds) {
+  reps <- tidyr::expand_grid(scen = scenarios, seed = seeds)
+  read_rep <- \(scen, seed, f, sub = "") {
+    p <- file.path(run, "reps", scen, sprintf("seed_%02d", seed), sub, f)
+    readr::read_tsv(p, show_col_types = FALSE) |>
+      dplyr::mutate(scenario_id = scen, seed = seed)
+  }
+  rd <- \(f, sub, m, sc, nm) {
+    d <- purrr::pmap(reps, \(scen, seed) read_rep(scen, seed, f, sub)) |>
+      purrr::list_rbind() |>
+      dplyr::filter(method == m)
+    if (!is.na(sc)) {
+      d <- dplyr::filter(d, score == sc)
+    }
+    d$v <- if ("value" %in% names(d)) d$value else d$estimate
+    d |>
+      dplyr::select(scenario_id, seed, donor_id, v) |>
+      dplyr::rename(!!nm := v)
+  }
+  truth <- purrr::pmap(reps, \(scen, seed) {
+    read_rep(scen, seed, "truth_donor.tsv")
+  }) |>
+    purrr::list_rbind() |>
+    dplyr::select(
+      scenario_id,
+      seed,
+      donor_id,
+      responder_sample,
+      true_rms_sample
+    )
+  k <- c("scenario_id", "seed", "donor_id")
+  truth |>
+    dplyr::left_join(
+      rd("donor_scores.tsv", "", "COMPASS_default", "FS", "compass"),
+      k,
+      relationship = "one-to-one"
+    ) |>
+    dplyr::left_join(
+      rd(
+        "donor_scores.tsv",
+        "polyicsflow",
+        "polyICSFlow_clipped",
+        "net_sum",
+        "polyics"
+      ),
+      k,
+      relationship = "one-to-one"
+    ) |>
+    dplyr::left_join(
+      rd(
+        "donor_magnitude.tsv",
+        "polyicsflow",
+        "polyICSFlow_unclipped",
+        NA,
+        "polyics_mag"
+      ),
+      k,
+      relationship = "one-to-one"
+    ) |>
+    dplyr::mutate(compass = dplyr::coalesce(compass, 0))
 }

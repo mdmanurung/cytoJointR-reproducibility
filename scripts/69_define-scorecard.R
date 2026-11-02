@@ -158,51 +158,7 @@ rule_row <- \(called, truth, kind) {
 }
 
 # Simulation comparators: pooled over the detection scenarios and seeds --------
-read_rep <- \(run, scen, seed, f, sub = "") {
-  p <- file.path(run, "reps", scen, sprintf("seed_%02d", seed), sub, f)
-  read_tsv(p, show_col_types = FALSE) |> mutate(scenario_id = scen, seed = seed)
-}
-sim_run <- SIM_RUNS[1]
-reps <- expand_grid(scen = DETECTION_SCENARIOS, seed = SIM_SEEDS)
-sim_truth <- pmap(reps, \(scen, seed) {
-  read_rep(sim_run, scen, seed, "truth_donor.tsv")
-}) |>
-  list_rbind()
-sim_det <- pmap(reps, \(scen, seed) {
-  read_rep(sim_run, scen, seed, "donor_scores.tsv") |>
-    filter(method == "COMPASS_default", score == "FS") |>
-    select(scenario_id, seed, donor_id, compass = value)
-}) |>
-  list_rbind()
-sim_poly <- pmap(reps, \(scen, seed) {
-  read_rep(sim_run, scen, seed, "donor_scores.tsv", "polyicsflow") |>
-    filter(method == "polyICSFlow_clipped") |>
-    select(scenario_id, seed, donor_id, polyics = value)
-}) |>
-  list_rbind()
-sim_mag <- pmap(reps, \(scen, seed) {
-  read_rep(sim_run, scen, seed, "donor_magnitude.tsv", "polyicsflow") |>
-    filter(method == "polyICSFlow_unclipped") |>
-    select(scenario_id, seed, donor_id, polyics_mag = estimate)
-}) |>
-  list_rbind()
-sim_tab <- sim_truth |>
-  left_join(
-    sim_det,
-    join_by(scenario_id, seed, donor_id),
-    relationship = "one-to-one"
-  ) |>
-  left_join(
-    sim_poly,
-    join_by(scenario_id, seed, donor_id),
-    relationship = "one-to-one"
-  ) |>
-  left_join(
-    sim_mag,
-    join_by(scenario_id, seed, donor_id),
-    relationship = "one-to-one"
-  ) |>
-  mutate(compass = coalesce(compass, 0)) # a COMPASS fit that failed reports no response, as 08
+sim_tab <- sim_comparators(SIM_RUNS[1], DETECTION_SCENARIOS, SIM_SEEDS)
 sim_auc_c <- seed_boot(
   sim_tab |>
     transmute(
