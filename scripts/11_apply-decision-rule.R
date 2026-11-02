@@ -22,7 +22,9 @@ suppressPackageStartupMessages({
 
 # Parameters (each from the plan, "Decision rule, stated before any result") ---------
 DECISION_TARGET <- "sample" # the cj_draws estimand stays the default (plan "Estimand"); the struct target is reported, not decided on
-DECISION_SCORES <- c("RMS", "CPS", "CCS") # rule 1: RMS, CPS and CCS coverage
+DECISION_SCORES <- c("RMS", "CPS") # rule 1 was RMS, CPS and CCS. POST HOC amendment 2026-11-02, after
+                                   # seeing A/B/C results: no model covered CCS under generator B (best 0.34),
+                                   # so CCS is reported as experimental and the user chose to decide on RMS/CPS
 COVERAGE_MIN <- 0.85 # rule 1: coverage lower bound for a 90% interval
 COVERAGE_MAX <- 0.97 # rule 1: coverage upper bound
 COVERAGE_SE_MULT <- 2 # rule 1: "within 2 SE" of the band, using the seed-clustered coverage SE
