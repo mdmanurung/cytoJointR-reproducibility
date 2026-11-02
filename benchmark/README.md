@@ -108,6 +108,11 @@ Test-set accesses so far: **0**.
 `--test` appends a row to `test_access.tsv`, prints the new count and refuses a second test run for the same candidate label.
 Update this number with each access. Record why the access was made.
 
+## Baseline (2026-11-03)
+
+Package e54b883 (main), three candidates: `baseline-m1dm-sample` (default), `baseline-m1dm-structured`, `baseline-m1`.
+Rows are in `leaderboard.tsv`, raw scores in `runs/2026-11-03_bench-baseline/`. No candidate beats COMPASS or polyICSFlow on the dev win criteria; test mode was not run.
+
 ## Known limits
 
 - RV144 placebos are the only negatives. Placebo infection status is not recorded, so the split stratifies placebo as one group.
