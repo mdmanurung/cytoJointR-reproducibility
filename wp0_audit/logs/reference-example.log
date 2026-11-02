@@ -1,0 +1,39 @@
+          RMS poly_absolute poly_marginal           CPS           CCS 
+ 0.0240000000  0.0110000000  0.0112849918  0.2333333333 -0.0002849918 
+      breadth 
+ 0.2333333333 
+  pattern_id    pattern degree   p_u   p_s        p_cf net_pattern   RMS
+1          0 IFNG- TNF-      0 0.994 0.970 0.970284992      -0.024 0.000
+2          1 IFNG+ TNF-      1 0.003 0.011 0.010715008       0.008 0.008
+3          2 IFNG- TNF+      1 0.002 0.007 0.006715008       0.005 0.005
+4          3 IFNG+ TNF+      2 0.001 0.012 0.012284992       0.011 0.011
+        CPS           CCS poly_absolute poly_marginal coordination_residual
+1 0.0000000  0.0000000000         0.000    0.00000000         -0.0002849918
+2 0.0000000  0.0000000000         0.000    0.00000000          0.0002849918
+3 0.0000000  0.0000000000         0.000    0.00000000          0.0002849918
+4 0.2333333 -0.0002849918         0.011    0.01128499         -0.0002849918
+     breadth
+1  0.0000000
+2 -0.1333333
+3 -0.1000000
+4  0.4666667
+  pattern_id    pattern marker degree marker_positive excess_u excess_s
+2          1 IFNG+ TNF-   IFNG      1            TRUE      100      150
+4          3 IFNG+ TNF+   IFNG      2            TRUE      100      150
+7          2 IFNG- TNF+    TNF      1            TRUE      100      150
+8          3 IFNG+ TNF+    TNF      2            TRUE      100      150
+  net_burden frequency_contribution intensity_contribution FIS_contribution
+2       1.35                  1.000                  0.350               NA
+4       1.70                  1.375                  0.325               NA
+7       0.85                  0.625                  0.225               NA
+8       1.70                  1.375                  0.325               NA
+  FIS_standardized_contribution
+2                            NA
+4                            NA
+7                            NA
+8                            NA
+    estimate        lower        upper      epsilon   p_positive   p_negative 
+   0.0000000   -0.0950000    0.0950000    0.0200000    0.3333333    0.3333333 
+p_negligible      n_draws    n_invalid 
+   0.3333333    3.0000000    0.0000000 
+cmd: Rscript examples/reference_usage.R; exit 0

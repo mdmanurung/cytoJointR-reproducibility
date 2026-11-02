@@ -1,0 +1,88 @@
+{
+  "status": "PASS",
+  "scope": "Independent Python mathematical oracle only",
+  "seed": 20261101,
+  "python": "3.12.13",
+  "numpy": "2.4.6",
+  "scipy": "1.16.3",
+  "tests": [
+    {
+      "test": "bit order and exhaustive patterns",
+      "status": "PASS"
+    },
+    {
+      "test": "IPF margins and baseline higher-order interactions",
+      "status": "PASS"
+    },
+    {
+      "test": "signed score examples, dependence change and CCS cancellation",
+      "status": "PASS"
+    },
+    {
+      "test": "exact score and burden allocations",
+      "status": "PASS"
+    },
+    {
+      "test": "raw/compressed likelihood and finite-difference gradients",
+      "status": "PASS"
+    },
+    {
+      "test": "truncated positive conditional means",
+      "status": "PASS"
+    },
+    {
+      "test": "epsilon probability partition and invalid support rejection",
+      "status": "PASS"
+    }
+  ],
+  "metrics": {
+    "pattern_spaces_checked": [
+      2,
+      4,
+      8,
+      16,
+      32
+    ],
+    "ipf_max_margin_error": 9.995060334944128e-13,
+    "max_preserved_log_interaction_error": 1.199040866595169e-14,
+    "max_marginal_only_null_CCS": 1.109373010121928e-12,
+    "ipf_random_cases": 400,
+    "fixed_margin_dependence_counterexample": {
+      "marker_margins": [
+        0.2,
+        0.2
+      ],
+      "RMS": -0.03999999999999998,
+      "CCS": 0.04
+    },
+    "synthetic_example": {
+      "RMS": 0.024,
+      "CPS": 0.23333333333333336,
+      "CCS": -0.0002849918308362818
+    },
+    "CCS_cancellation_nonzero_pattern_residual": 0.020000000000000004,
+    "max_attribution_identity_error": 4.163336342344337e-16,
+    "max_polyfunctional_path_identity_error": 1.1102230246251565e-16,
+    "attribution_random_cases": 200,
+    "max_compressed_loglik_relative_error": 1.3079597208474253e-15,
+    "max_finite_difference_gradient_relative_error": 4.28474545988322e-09,
+    "joint_compressed_relative_error": 2.0128990445091202e-16,
+    "likelihood_random_cases": 100,
+    "positive_excess_mean_comparison_error": 0.0,
+    "epsilon_partition": {
+      "positive": 0.3333333333333333,
+      "negative": 0.3333333333333333,
+      "negligible": 0.3333333333333333
+    }
+  },
+  "not_run": [
+    "R execution and R CMD check",
+    "RTMB fitting",
+    "HMC fitting and comparison",
+    "SBC and interval coverage",
+    "runtime benchmarks",
+    "external FCS validation"
+  ],
+  "oracle_sha256": "e8e07d9fbcbd3fd92d23eee219c8f5c823441dcc6abf351ca4712c13af7cd55c"
+}
+cmd: /exports/archive/hg-funcgenom-research/mdmanurung/conda/envs/aging_embed/bin/python3 -I checks/verify_mathematics.py (system python3 lacks numpy; bcells env lacks scipy); exit 0

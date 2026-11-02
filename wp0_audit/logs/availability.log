@@ -1,0 +1,14 @@
+    CRAN 
+"@CRAN@" 
+     Package Version  Depends        NeedsCompilation
+RTMB "RTMB"  "2.0"    NA             "yes"           
+TMB  "TMB"   "1.9.25" "R (>= 3.0.0)" "yes"           
+[1] ‘3.22’
+                                                  Package 
+                                                "COMPASS" 
+                                                  Version 
+                                                 "1.48.0" 
+                                               Repository 
+"https://bioconductor.org/packages/3.22/bioc/src/contrib" 
+[1] "BiocManager" "BiocManager"
+[1] "BiocManager" "BiocManager"

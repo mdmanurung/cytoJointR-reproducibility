@@ -1,0 +1,9 @@
+* checking for file ‘../work/package/cytojointR/DESCRIPTION’ ... OK
+* preparing ‘cytojointR’:
+* checking DESCRIPTION meta-information ... OK
+* checking for LF line-endings in source and make files and shell scripts
+* checking for empty or unneeded directories
+* building ‘cytojointR_0.5.1.9000.tar.gz’
+Warning: invalid uid value replaced by that for user 'nobody'
+
+cmd: R CMD build; exit 0

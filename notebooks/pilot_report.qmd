@@ -1,0 +1,192 @@
+---
+title: "cytoJointR pilot benchmark"
+format:
+  html:
+    embed-resources: true
+    code-fold: true
+execute:
+  warning: false
+---
+
+```{r}
+#| label: parameters
+# Parameters -------------------------------------------------------------------
+RUN_DIR <- Sys.getenv("PILOT_RUN_DIR", "runs/2026-11-02_pilot")  # replicates and scenarios.tsv, relative to the repo root
+SUMMARY_DIR <- Sys.getenv("PILOT_SUMMARY_DIR", "runs/2026-11-02_pilot-summary-v2")  # 04_summarise-pilot.R tables
+SCORES_SHOWN <- c("RMS", "poly_absolute", "poly_marginal", "CPS", "CCS", "breadth")
+COVERAGE_TARGET <- 0.9  # nominal interval level
+```
+
+```{r}
+#| label: setup
+suppressPackageStartupMessages({
+  library(dplyr)
+  library(forcats)
+  library(ggplot2)
+  library(purrr)
+  library(readr)
+  library(tidyr)
+})
+theme_set(theme_bw(base_size = 8))
+read_run <- \(f) read_tsv(file.path(here::here(SUMMARY_DIR), f), show_col_types = FALSE)
+# Replicates of the summarised stage only: the done rows of replicate_status.tsv.
+done_dirs <- read_run("replicate_status.tsv") |>
+  filter(done) |>
+  mutate(dir = file.path(here::here(RUN_DIR), "reps", scenario_id, sprintf("seed_%02d", seed))) |>
+  pull(dir)
+read_reps <- \(f) {
+  file.path(done_dirs, f) |>
+    keep(file.exists) |>
+    map(\(x) read_tsv(x, show_col_types = FALSE, col_types = cols(donor_id = "c"))) |>
+    list_rbind()
+}
+scenarios <- read_tsv(file.path(here::here(RUN_DIR), "scenarios.tsv"), show_col_types = FALSE)
+scenario_levels <- scenarios$scenario_id
+metrics <- read_run("metrics_scores.tsv") |>
+  filter(score %in% SCORES_SHOWN) |>
+  mutate(scenario_id = fct(scenario_id, levels = scenario_levels),
+         score = fct(score, levels = SCORES_SHOWN))
+# Per-replicate rates: one point per seed over the summary.
+reps <- read_reps("score_recovery.tsv") |>
+  filter(score %in% SCORES_SHOWN) |>
+  summarise(coverage = mean(covered, na.rm = TRUE), bias = mean(estimate - truth, na.rm = TRUE),
+            .by = c(scenario_id, model, score, seed)) |>
+  mutate(scenario_id = fct(scenario_id, levels = scenario_levels),
+         score = fct(score, levels = SCORES_SHOWN))
+```
+
+## Completion
+
+Every scenario and seed that finished is listed here; a missing one is a failed task.
+
+```{r}
+read_run("replicate_status.tsv") |>
+  summarise(expected = n(), done = sum(done), .by = scenario_id) |>
+  knitr::kable()
+```
+
+## Coverage
+
+Each score's 90% interval covers the true score about as often as its nominal level, except where the point and its error bar fall away from the dashed line (grey points are single seeds; black points are the mean with a binomial MC SE of one standard error).
+
+```{r}
+#| fig-width: 7
+#| fig-height: 6
+plot_cov <- metrics |>
+  filter(model == "full")
+ggplot(plot_cov, aes(coverage, scenario_id)) +
+  geom_point(data = filter(reps, model == "full"), aes(x = coverage), colour = "grey60",
+             alpha = 0.5, size = 0.6, position = position_jitter(height = 0.15, width = 0, seed = 1)) +
+  geom_pointrange(aes(xmin = coverage - coverage_mcse, xmax = coverage + coverage_mcse), size = 0.2) +
+  geom_vline(xintercept = COVERAGE_TARGET, linetype = "dashed") +
+  facet_wrap(vars(score), nrow = 2) +
+  coord_cartesian(xlim = c(0, 1)) +
+  labs(x = "Coverage of the 90% interval (fraction of contrasts)", y = NULL)
+```
+
+## Bias
+
+Bias is the posterior-mean error against the true score on the fraction scale (grey points are single seeds; black points are the mean over seeds with one MC SE).
+
+```{r}
+#| fig-width: 7
+#| fig-height: 6
+ggplot(plot_cov, aes(bias, scenario_id)) +
+  geom_point(data = filter(reps, model == "full"), aes(x = bias), colour = "grey60", alpha = 0.5,
+             size = 0.6, position = position_jitter(height = 0.15, width = 0, seed = 1)) +
+  geom_pointrange(aes(xmin = bias - bias_mcse, xmax = bias + bias_mcse), size = 0.2) +
+  geom_vline(xintercept = 0, linetype = "dashed") +
+  facet_wrap(vars(score), nrow = 2, scales = "free_x") +
+  labs(x = "Bias (estimate - truth, fraction scale)", y = NULL)
+```
+
+## False sign rate
+
+A false sign is P(score > epsilon) above 0.95 while the true score is at most 0, shown with a binomial MC SE over the seeds that have such a contrast.
+
+```{r}
+#| fig-width: 7
+#| fig-height: 6
+ggplot(filter(metrics, model == "full", !is.na(false_sign_rate)), aes(false_sign_rate, scenario_id)) +
+  geom_pointrange(aes(xmin = pmax(0, false_sign_rate - false_sign_mcse),
+                      xmax = false_sign_rate + false_sign_mcse), size = 0.2) +
+  facet_wrap(vars(score), nrow = 2) +
+  labs(x = "False sign rate (fraction of contrasts with truth <= 0)", y = NULL)
+```
+
+## Visit change
+
+The visit-change table has the same metrics at donor and population level, shown for the visit-change scenarios.
+
+```{r}
+read_run("metrics_visit_change.tsv") |>
+  filter(grepl("visit_change", scenario_id), score %in% c("RMS", "poly_absolute", "CPS")) |>
+  mutate(across(where(is.numeric), \(x) signif(x, 3))) |>
+  select(scenario_id, model, level, score, n_reps, bias, bias_mcse, rmse, coverage, coverage_mcse) |>
+  knitr::kable()
+```
+
+## Ablation
+
+Dropping the donor-by-visit deviation (`no_donor_visit`) is compared with the full model on the visit-change scenarios, with each seed a point.
+
+```{r}
+#| fig-width: 7
+#| fig-height: 3.5
+abl <- read_reps("visit_change_recovery.tsv") |>
+  filter(grepl("visit_change", scenario_id), level == "donor", score %in% c("RMS", "poly_absolute", "CPS")) |>
+  summarise(coverage = mean(covered, na.rm = TRUE), .by = c(scenario_id, model, score, seed))
+ggplot(abl, aes(model, coverage)) +
+  geom_point(alpha = 0.5, size = 0.8, position = position_jitter(width = 0.15, height = 0, seed = 1)) +
+  stat_summary(fun = mean, geom = "crossbar", width = 0.5, linewidth = 0.2) +
+  geom_hline(yintercept = COVERAGE_TARGET, linetype = "dashed") +
+  facet_grid(scenario_id ~ score) +
+  labs(x = NULL, y = "Donor-level visit-change coverage (fraction of donors)")
+```
+
+## Diagnostics
+
+R-hat, ESS, divergences and fit time per replicate, with the usual thresholds (R-hat 1.01, ESS 400) dashed.
+
+```{r}
+#| fig-width: 7
+#| fig-height: 5
+diag_long <- read_reps("diagnostics.tsv") |>
+  filter(model == "full") |>
+  mutate(scenario_id = fct(scenario_id, levels = scenario_levels)) |>
+  pivot_longer(c(max_rhat, min_ess_bulk, n_divergent, fit_seconds), names_to = "metric", values_to = "value")
+ref <- tibble(metric = c("max_rhat", "min_ess_bulk"), v = c(1.01, 400))
+ggplot(diag_long, aes(value, scenario_id)) +
+  geom_point(alpha = 0.5, size = 0.6, position = position_jitter(height = 0.15, width = 0, seed = 1)) +
+  geom_vline(data = ref, aes(xintercept = v), linetype = "dashed") +
+  facet_wrap(vars(metric), scales = "free_x") +
+  labs(x = NULL, y = NULL)
+```
+
+## Mixing flags
+
+Replicates with R-hat above 1.01, bulk ESS below 400 or any divergence are flagged, kept in every metric above, and counted here (the `no_dv` scenario is data without donor-by-visit variation fitted with the donor-by-visit term).
+
+```{r}
+read_run("metrics_diagnostics.tsv") |>
+  mutate(across(where(is.numeric), \(x) signif(x, 3))) |>
+  select(scenario_id, model, n_reps, n_reps_bad_mixing, n_reps_divergent, max_rhat, min_ess_bulk,
+         median_fit_seconds) |>
+  knitr::kable()
+```
+
+## COMPASS
+
+COMPASS FS and PFS (seeds 1-5) are plotted against the true RMS and true polyfunctional net frequency of the same contrasts, next to the cytoJointR estimate.
+
+```{r}
+#| fig-width: 7
+#| fig-height: 4
+cmp <- read_run("compass_comparison.tsv") |>
+  pivot_longer(c(compass_FS, compass_PFS, estimate_RMS), names_to = "quantity", values_to = "value") |>
+  mutate(truth = if_else(quantity == "compass_PFS", truth_poly_absolute, truth_RMS))
+ggplot(cmp, aes(truth, value, colour = quantity)) +
+  geom_point(size = 0.5, alpha = 0.5) +
+  facet_wrap(vars(scenario_id), scales = "free") +
+  labs(x = "True score (RMS; poly_absolute for PFS)", y = "Estimate or COMPASS score")
+```

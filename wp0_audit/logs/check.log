@@ -1,0 +1,30 @@
+* using log directory ‘/exports/para-lipg-hpc/mdmanurung/cytoJointR-reproducibility/wp0_audit/logs/cytojointR.Rcheck’
+* using R version 4.5.1 (2025-06-13)
+* using platform: x86_64-conda-linux-gnu
+* R was compiled by
+    x86_64-conda-linux-gnu-cc (conda-forge gcc 10.4.0-19) 10.4.0
+    GNU Fortran (conda-forge gcc 10.4.0-19) 10.4.0
+* running under: Rocky Linux 8.10 (Green Obsidian)
+* using session charset: UTF-8
+* using option ‘--no-manual’
+* checking for file ‘cytojointR/DESCRIPTION’ ... OK
+* this is package ‘cytojointR’ version ‘0.5.1.9000’
+* package encoding: UTF-8
+* checking package namespace information ... OK
+* checking package dependencies ... ERROR
+Package suggested but not available: ‘RTMB’
+
+The suggested packages are required for a complete check.
+Checking can be attempted without them by setting the environment
+variable _R_CHECK_FORCE_SUGGESTS_ to a false value.
+
+See section ‘The DESCRIPTION file’ in the ‘Writing R Extensions’
+manual.
+* DONE
+
+Status: 1 ERROR
+See
+  ‘/exports/para-lipg-hpc/mdmanurung/cytoJointR-reproducibility/wp0_audit/logs/cytojointR.Rcheck/00check.log’
+for details.
+
+cmd: R CMD check --no-manual; exit 1

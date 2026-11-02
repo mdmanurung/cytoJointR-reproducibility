@@ -1,0 +1,29 @@
+                          file
+1        test-counterfactual.R
+2        test-counterfactual.R
+3    test-signed-attribution.R
+4    test-signed-attribution.R
+5    test-signed-attribution.R
+6            test-simulation.R
+7 test-sufficient-statistics.R
+8 test-sufficient-statistics.R
+                                                          test nb failed
+1    IPF preserves stimulated margins and baseline association  3      0
+2            coordination is zero if dependence stays constant  1      0
+3              signed scores and exact contributions reconcile 13      0
+4             fixed marker margins do not force zero magnitude  3      0
+5         invalid partitions, intensity and draws are rejected  5      0
+6       simulator returns complete truths and missing controls  4      0
+7 Gaussian compressed likelihood equals event-level likelihood  2      0
+8           compression preserves all events and their moments  4      0
+  skipped error warning
+1   FALSE FALSE       0
+2   FALSE FALSE       0
+3   FALSE FALSE       0
+4   FALSE FALSE       0
+5   FALSE FALSE       0
+6   FALSE FALSE       0
+7   FALSE FALSE       0
+8   FALSE FALSE       0
+Warning message:
+package ‘testthat’ was built under R version 4.5.2 

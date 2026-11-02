@@ -1,0 +1,12 @@
+cytoJointR/
+cytoJointR-wt/
+renv/
+wp0_audit/work/
+# run outputs stay local; each run's README (provenance) is tracked
+runs/*/*
+!runs/*/README.md
+# design bundles: unpublished source material, kept local
+plans/*.zip
+# check build trees and tarballs copy bundle code; keep logs only
+wp0_audit/logs/**/*.Rcheck/
+wp0_audit/logs/*.tar.gz
