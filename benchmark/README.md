@@ -113,6 +113,46 @@ Update this number with each access. Record why the access was made.
 Package e54b883 (main), three candidates: `baseline-m1dm-sample` (default), `baseline-m1dm-structured`, `baseline-m1`.
 Rows are in `leaderboard.tsv`, raw scores in `runs/2026-11-03_bench-baseline/`. No candidate beats COMPASS or polyICSFlow on the dev win criteria; test mode was not run.
 
+## Iteration log
+
+Fourteen candidates have dev-mode rows. None beats COMPASS on the dev win criteria. The test half is untouched: `test_access.tsv` holds only its header, so the access count is 0.
+
+Reference values from the COMPASS FS columns of the same files: RV144-dev AUC 0.974, pAUC 0.903, TB_u AUC 0.864.
+Columns: AUC and pAUC are the detection score P(RMS > 1e-4) at the candidate's fit level (metric ids `rv144_dev.auc.P_RMS.fit`, `rv144_dev.pauc10.P_RMS.fit`, `tb_u.auc.P_RMS.fit`). "Guards passed" counts the `sim.cov90.*` rows with `pass = TRUE` out of 14 (7 scenarios, RMS and CPS). "Beats COMPASS" is the `win.beats_compass` row. Every candidate fails at least one part of that rule, and the guards fail for all of them.
+Rows are in the order of their timestamps. Each candidate other than the baselines adds flags to `model=m1dm,level=structured`; the baselines show their own.
+
+| Label | Flags (fit arguments) | Package commit | RV144-dev AUC | pAUC | TB_u AUC | Guards passed | Beats COMPASS | Rows in |
+|---|---|---|---|---|---|---|---|---|
+| `baseline-m1dm-sample` | `model=m1dm,level=sample` | e54b883 | 0.737 | 0.000 | 0.649 | 10/14 | no | `leaderboard.tsv` |
+| `baseline-m1dm-structured` | `model=m1dm,level=structured` | e54b883 | 0.944 | 0.772 | 0.610 | 12/14 | no | `leaderboard.tsv` |
+| `baseline-m1` | `model=m1,level=sample` | e54b883 | 0.824 | 0.282 | 0.755 | 11/14 | no | `leaderboard.tsv` |
+| `c1-marker` | `level=structured,donor_loading=marker` | f02b669 | 0.753 | 0.000 | 0.664 | 8/14 | no | `leaderboard.tsv` |
+| `c2-responder` | `level=structured,responder=TRUE` | aece1a4 | 0.937 | 0.426 | 0.626 | 11/14 | no | `leaderboard.tsv` |
+| `c3-degree` | `level=structured,degree_terms=TRUE` | 139d835 | 0.946 | 0.766 | 0.619 | 12/14 | no | `leaderboard.tsv` |
+| `c6-responder-screen` | `level=structured,responder=TRUE` | 3188b90 | 0.979 | 0.850 | 0.626 | 11/14 | no | `leaderboard.tsv` |
+| `c7-responder-degree` | `level=structured,responder=TRUE,degree_terms=TRUE` | 3188b90 | 0.981 | 0.872 | 0.626 | 11/14 | no | `leaderboard.tsv` |
+| `c9-pooled-resp` | `level=structured,responder=TRUE,responder_pool=TRUE,degree_terms=TRUE` | c459462 | 0.979 | 0.862 | 0.620 | 11/14 | no | `leaderboard_c9.tsv` |
+| `c10-spike02` | `level=structured,responder=TRUE,degree_terms=TRUE,responder_spike=0.02` | 9c6d942 | 0.977 | 0.873 | 0.616 | 11/14 | no | `leaderboard_c10.tsv` |
+| `c7f-fast` | `level=structured,responder=TRUE,degree_terms=TRUE,iter_warmup=400` | 3188b90 | 0.980 | 0.868 | 0.636 | 11/14 | no | `leaderboard.tsv` |
+| `c8-resp-deg-basalmarker` | `level=structured,responder=TRUE,degree_terms=TRUE,donor_loading=marker_basal,iter_warmup=400` | 7f125c9 | 0.878 | 0.726 | 0.628 | 9/14 | no | `leaderboard.tsv` |
+| `c11-fast-stimdeg3` | `level=structured,responder=TRUE,degree_terms=TRUE,iter_warmup=400,stim_degree=TRUE` | 208c17d | 0.982 | 0.897 | 0.634 | 11/14 | no | `leaderboard.tsv` |
+| `c12-fast-stimdeg2` | `level=structured,responder=TRUE,degree_terms=TRUE,iter_warmup=400,stim_degree=2` | 208c17d | 0.977 | 0.877 | 0.612 | 10/14 | no | `leaderboard.tsv` |
+
+Reading the table:
+
+- The structured level and the responder terms (`responder=TRUE`) lift RV144-dev AUC from 0.737 (default) to 0.98.
+- The best paired AUC difference against COMPASS is `c11-fast-stimdeg3`: +0.007 (95% CI -0.007 to 0.025). The lower bound never exceeds 0, so criterion 1 of the win rule fails for every candidate.
+- TB_u stays between 0.61 and 0.76 for all candidates, against COMPASS 0.864. `runs/2026-11-04_donor-effects/tb_u_diagnosis.md` gives the reason.
+- `c2-responder` had R-hat 1.73 and ESS 6 in its RV144 posterior predictive fit (two chains in a worse mode). `c6-responder-screen` replaced it.
+- `c8-resp-deg-basalmarker` is worse than `c7-responder-degree` (AUC 0.878).
+- `c7f-fast` repeats `c7-responder-degree` with `iter_warmup=400`. Metrics match; the RV144 fit took 16 min instead of 36 min.
+
+Candidates without leaderboard rows: `c4-scaled`, `c5-responder-init`, `c8-resp-deg-stimdeg`, `c9-resp-deg-basalmarker` and `c10-resp-deg-soft`. They timed out, were cancelled or were stopped when scope changed. The names `c9-resp-deg-basalmarker` and `c10-resp-deg-soft` differ from the leaderboard labels `c9-pooled-resp` and `c10-spike02`.
+The `c9-pooled-resp` and `c10-spike02` rows live in `runs/2026-11-04_donor-effects/leaderboard_c9.tsv` and `leaderboard_c10.tsv`, not in `benchmark/leaderboard.tsv`.
+
+Run directories are dated 2026-11-03 to 2026-11-06. Run notes: `runs/2026-11-03_bench-baseline/README.md`, `runs/2026-11-04_donor-effects/README.md`, `runs/2026-11-05_donor-effects-r2/README.md`, `runs/2026-11-06_donor-effects-r3/README.md`.
+The package branch is `feat/donor-effects`. It is not merged.
+
 ## Known limits
 
 - RV144 placebos are the only negatives. Placebo infection status is not recorded, so the split stratifies placebo as one group.
