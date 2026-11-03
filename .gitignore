@@ -10,3 +10,8 @@ plans/*.zip
 # check build trees and tarballs copy bundle code; keep logs only
 wp0_audit/logs/**/*.Rcheck/
 wp0_audit/logs/*.tar.gz
+
+# compiled Stan executables next to their .stan sources
+scripts/50_m1-hier-mean
+scripts/50_m1-hier-sd
+__marimo__/
