@@ -1,0 +1,388 @@
+---
+title: "cytoJointR vs COMPASS vs polyICSFlow on public SARS-CoV-2 Spike ICS"
+format:
+  html:
+    embed-resources: true
+    code-fold: true
+execute:
+  warning: false
+---
+
+<!-- Purpose: report the SARS-CoV-2 Spike ICS benchmark (Zenodo 8088178) from the tables of one run.
+     Run:     /home/mdmanurung/.local/bin/quarto render notebooks/realdata_sarscov2.qmd
+     Inputs:  runs/2026-11-03_realdata/sarscov2/<pop>/*.tsv, <pop>/polyicsflow/*.tsv [32_analyse-sarscov2.R]
+              data/processed/sarscov2/{checksums,data_checks,unpaired}.tsv, citation.txt [24_prepare-sarscov2.R]
+     Outputs: notebooks/realdata_sarscov2.html -->
+
+```{r}
+#| label: parameters
+# Parameters -------------------------------------------------------------------
+RUN_DIR <- Sys.getenv("SARS_RUN_DIR", "runs/2026-11-03_realdata/sarscov2") # run directory, relative to the repo root
+PROCESSED_DIR <- "data/processed/sarscov2" # output of 24_prepare-sarscov2.R
+POPULATIONS <- strsplit(Sys.getenv("SARS_POPS", "CD4,CD8"), ",")[[1]] # one fit each
+P_CUT <- 0.95 # cytoJointR responder rule: P(RMS > epsilon) > 0.95
+COMPASS_CUT <- 0.5 # COMPASS responder rule: Response > 0.5
+POLY_CUT <- 0 # polyICSFlow responder rule: clipped net sum > 0
+COVERAGE_TARGET <- 0.9 # nominal level of the posterior predictive interval
+```
+
+```{r}
+#| label: setup
+suppressPackageStartupMessages({
+  library(dplyr)
+  library(forcats)
+  library(ggplot2)
+  library(purrr)
+  library(readr)
+  library(stringr)
+  library(tidyr)
+})
+theme_set(theme_bw(base_size = 8))
+set.seed(1) # jitter only
+run_path <- \(...) file.path(here::here(RUN_DIR), ...)
+read_pop <- \(f, sub = "") {
+  set_names(POPULATIONS) |>
+    map(\(p) read_tsv(run_path(p, sub, f), show_col_types = FALSE, col_types = cols(donor_id = "c"))) |>
+    list_rbind(names_to = "population")
+}
+read_proc <- \(f) read_tsv(file.path(here::here(PROCESSED_DIR), f), show_col_types = FALSE)
+# One palette keyed by method label; an unknown label fails.
+METHOD_COLOURS <- c(
+  m1dm = "#D55E00",
+  m1 = "#E69F00",
+  C0 = "#CC79A7",
+  COMPASS = "#0072B2",
+  polyICSFlow_clipped = "#009E73",
+  polyICSFlow_unclipped = "#999999"
+)
+as_method <- \(x) {
+  stopifnot("unknown method label" = all(x %in% names(METHOD_COLOURS)))
+  fct(x, levels = names(METHOD_COLOURS))
+}
+VISITS <- c("E01", "E02", "E03")
+scores <- read_pop("scores.tsv")
+visit_change <- read_pop("visit_change.tsv")
+compass <- read_pop("compass.tsv")
+compass_groups <- read_pop("compass_groups.tsv")
+poly <- read_pop("donor_scores.tsv", "polyicsflow")
+diagnostics <- read_pop("diagnostics.tsv")
+phi_draws <- read_pop("phi_draws.tsv")
+loo_table <- read_pop("loo.tsv")
+loo_compare <- read_pop("loo_compare.tsv")
+loo_pointwise <- read_pop("loo_pointwise.tsv")
+ppc <- read_pop("ppc.tsv")
+samples <- read_pop("samples.tsv")
+runtime <- bind_rows(
+  read_pop("runtime.tsv"),
+  read_pop("runtime.tsv", "polyicsflow")
+)
+
+# One row per method, population, stimulation, donor and visit: magnitude and the conventional responder call.
+cj_rms <- scores |>
+  filter(score == "RMS", is.na(marker), eps_set == "main") |>
+  transmute(population, method = model, stimulation, donor_id, visit, magnitude = estimate, responder = p_positive > P_CUT)
+calls <- bind_rows(
+  cj_rms,
+  compass |>
+    transmute(population, method = "COMPASS", stimulation, donor_id, visit, magnitude = Response, responder = Response > COMPASS_CUT),
+  poly |>
+    pivot_longer(c(clipped, unclipped), names_to = "variant", values_to = "magnitude") |>
+    transmute(
+      population,
+      method = paste0("polyICSFlow_", variant),
+      stimulation,
+      donor_id,
+      visit,
+      magnitude,
+      responder = magnitude > POLY_CUT
+    )
+) |>
+  mutate(method = as_method(method), visit = fct(visit, levels = VISITS))
+```
+
+## Data checks
+
+The two workbooks match their Zenodo md5, every sample is a complete 16-pattern partition of its parent count, and every Spike and PHA sample has one DMSO control at the same donor and visit.
+
+```{r}
+#| label: data-checks
+knitr::kable(read_proc("checksums.tsv"), caption = "Downloads against the Zenodo md5")
+knitr::kable(
+  read_proc("data_checks.tsv") |> pivot_wider(names_from = population, values_from = value),
+  caption = "Completeness and pairing (unpaired samples removed: see n_unpaired)"
+)
+cat(readLines(file.path(here::here(PROCESSED_DIR), "citation.txt")), sep = "\n")
+```
+
+## PHA positive control
+
+PHA is a positive control, so every donor and visit should respond, and each bar is the fraction that each method calls at its conventional rule.
+
+```{r}
+#| label: pha-sensitivity
+#| fig-width: 5
+#| fig-height: 3
+pha <- calls |>
+  filter(stimulation == "PHA") |>
+  summarise(n = n(), n_responder = sum(responder), .by = c(population, method)) |>
+  mutate(
+    sensitivity = n_responder / n,
+    lower = map2_dbl(n_responder, n, \(k, n) binom.test(k, n)$conf.int[1]),
+    upper = map2_dbl(n_responder, n, \(k, n) binom.test(k, n)$conf.int[2])
+  )
+ggplot(pha, aes(method, sensitivity, fill = method)) +
+  geom_col(width = 0.7) +
+  geom_errorbar(aes(ymin = lower, ymax = upper), width = 0.2) +
+  geom_text(aes(label = paste0(n_responder, "/", n), y = 1.08), size = 2.5) +
+  facet_wrap(vars(population)) +
+  scale_fill_manual(values = METHOD_COLOURS) +
+  scale_y_continuous(limits = c(0, 1.12), breaks = seq(0, 1, 0.25)) +
+  labs(x = NULL, y = "PHA sensitivity (exact 95% CI)") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1), legend.position = "none")
+knitr::kable(pha |> arrange(population, method), digits = 3)
+```
+
+## Spike responders
+
+Each point is one donor-visit; the table gives the fraction each method calls a Spike responder at its conventional rule, and polyICSFlow clipped is positive for almost any sample by construction.
+
+```{r}
+#| label: spike-responders
+#| fig-width: 6
+#| fig-height: 3
+spike <- calls |> filter(stimulation == "Spike")
+spike_rate <- spike |>
+  summarise(n = n(), fraction = mean(responder), .by = c(population, visit, method))
+ggplot(spike_rate, aes(visit, fraction, colour = method, group = method)) +
+  geom_line(linewidth = 0.3) +
+  geom_point(aes(size = n)) +
+  facet_wrap(vars(population)) +
+  scale_colour_manual(values = METHOD_COLOURS) +
+  scale_size_area(max_size = 3) +
+  scale_y_continuous(limits = c(0, 1)) +
+  labs(x = "Visit (E01 pre-dose 1, E02 post-dose 1, E03 post-dose 2)", y = "Fraction of Spike responders")
+knitr::kable(
+  spike |>
+    summarise(n = n(), fraction = mean(responder), .by = c(population, method)) |>
+    arrange(population, method),
+  digits = 3
+)
+```
+
+The epsilon of 1e-4 is one cell in 10 000 as in the benchmark, but a CD8 parent can have only 398 cells, so the table repeats the cytoJointR call with epsilon ten times larger.
+
+```{r}
+#| label: spike-epsilon
+scores |>
+  filter(score == "RMS", is.na(marker), stimulation == "Spike") |>
+  summarise(
+    n = n(),
+    fraction_responder = mean(p_positive > P_CUT),
+    .by = c(population, model, eps_set)
+  ) |>
+  arrange(population, model, eps_set) |>
+  knitr::kable(digits = 3, caption = "Spike responders by epsilon set (main = 1e-4, sens = 1e-3)")
+```
+
+## Spike magnitude
+
+The m1dm posterior mean RMS (percent of the parent population, net of DMSO) is shown per donor-visit with the median as a bar.
+
+```{r}
+#| label: spike-magnitude
+#| fig-width: 5
+#| fig-height: 3
+mag <- spike |> filter(method == "m1dm") |> mutate(percent = 100 * magnitude)
+ggplot(mag, aes(visit, percent)) +
+  geom_point(position = position_jitter(width = 0.1, seed = 1), colour = METHOD_COLOURS[["m1dm"]], size = 1) +
+  stat_summary(fun = median, geom = "crossbar", width = 0.5, linewidth = 0.3) +
+  facet_wrap(vars(population), scales = "free_y") +
+  labs(x = "Visit", y = "m1dm posterior mean RMS (% of parent, median bar)")
+knitr::kable(
+  mag |> summarise(n = n(), median = median(percent), q25 = quantile(percent, 0.25), q75 = quantile(percent, 0.75), .by = c(population, visit)),
+  digits = 3
+)
+```
+
+## Method agreement
+
+Each point is one Spike donor-visit; the plot compares m1dm with the other methods on within-population ranks, and the table gives the Spearman correlation.
+
+```{r}
+#| label: agreement
+#| fig-width: 6
+#| fig-height: 4.5
+compass_fs <- compass |> filter(stimulation == "Spike") |> transmute(population, donor_id, visit, COMPASS_FS = FS)
+wide <- spike |>
+  select(population, donor_id, visit, method, magnitude) |>
+  pivot_wider(names_from = method, values_from = magnitude) |>
+  left_join(compass_fs, join_by(population, donor_id, visit), relationship = "one-to-one") |>
+  rename(COMPASS_Response = COMPASS)
+AGREE_COLS <- c("m1dm", "m1", "C0", "COMPASS_Response", "COMPASS_FS", "polyICSFlow_clipped", "polyICSFlow_unclipped")
+spearman <- wide |>
+  group_by(population) |>
+  group_modify(\(d, key) {
+    cor(d[AGREE_COLS], method = "spearman", use = "pairwise.complete.obs") |> as_tibble(rownames = "a") |> pivot_longer(-a, names_to = "b", values_to = "rho")
+  }) |>
+  ungroup()
+ranks <- wide |>
+  mutate(across(all_of(AGREE_COLS), \(v) rank(v) / n()), .by = population) |>
+  pivot_longer(c("C0", "COMPASS_Response", "COMPASS_FS", "polyICSFlow_clipped"), names_to = "other", values_to = "rank_other")
+ggplot(ranks, aes(m1dm, rank_other, colour = visit)) +
+  geom_abline(linetype = 2, linewidth = 0.3) +
+  geom_point(size = 1) +
+  facet_grid(population ~ other) +
+  coord_equal() +
+  labs(x = "m1dm RMS (rank / n)", y = "Other method (rank / n)")
+knitr::kable(
+  spearman |> filter(a == "m1dm", b != "m1dm") |> pivot_wider(names_from = population, values_from = rho),
+  digits = 2,
+  caption = "Spearman correlation with m1dm, Spike donor-visits (repeated visits of a donor are not independent)"
+)
+```
+
+## Visit change
+
+Visit change is the per-draw difference in net RMS between visits (the paper defines E01 as before dose 1, E02 as after dose 1 and E03 as after dose 2), shown per donor with the equal-donor average of the observed donors.
+
+```{r}
+#| label: visit-change
+#| fig-width: 7
+#| fig-height: 6.5
+vc <- visit_change |>
+  filter(score == "RMS", is.na(marker)) |>
+  mutate(pair = paste(from, "->", to), across(c(estimate, lower, upper), \(v) 100 * v))
+vc_plot <- bind_rows(
+  vc |> filter(grain == "donor", stimulation == "Spike", status == "ok") |> mutate(row = donor_id, kind = "donor"),
+  vc |> filter(grain == "population", status == "ok") |> mutate(row = paste("mean", stimulation), kind = "population")
+)
+ggplot(vc_plot, aes(estimate, row, colour = stimulation, shape = kind)) +
+  geom_vline(xintercept = 0, linewidth = 0.3) +
+  geom_pointrange(aes(xmin = lower, xmax = upper), linewidth = 0.3, size = 0.25) +
+  facet_grid(population ~ pair, scales = "free", space = "free_y") +
+  scale_colour_manual(values = c(Spike = "#D55E00", PHA = "#0072B2")) +
+  labs(x = "Change in net RMS (percentage points of parent; 90% interval)", y = NULL)
+knitr::kable(
+  vc |> filter(grain == "population") |> select(population, stimulation, pair, n_donors, estimate, lower, upper, p_positive, p_negative),
+  digits = 3,
+  caption = "Population averages in percentage points; n_donors counts donors with both visits"
+)
+```
+
+## Model criticism: phi
+
+The m1dm overdispersion phi is the Dirichlet-multinomial concentration, so small phi means counts vary more than a multinomial allows.
+
+```{r}
+#| label: phi
+#| fig-width: 5
+#| fig-height: 3
+ggplot(phi_draws, aes(phi)) +
+  geom_density(fill = METHOD_COLOURS[["m1dm"]], alpha = 0.5) +
+  facet_wrap(vars(population), scales = "free_y") +
+  scale_x_log10() +
+  labs(x = "phi (log scale)", y = "Posterior density")
+knitr::kable(diagnostics, digits = 3, caption = "Sampler diagnostics and phi summary (90% interval)")
+```
+
+## Model criticism: LOO
+
+PSIS-LOO on the sample-level log likelihood compares m1dm with m1, and a positive elpd_diff favours the first-listed model.
+
+```{r}
+#| label: loo
+#| fig-width: 5
+#| fig-height: 3
+knitr::kable(loo_table, digits = 1)
+knitr::kable(loo_compare, digits = 1, caption = "Differences relative to the better model")
+loo_diff <- loo_pointwise |>
+  select(population, model, sample_id, elpd) |>
+  pivot_wider(names_from = model, values_from = elpd) |>
+  left_join(samples, join_by(population, sample_id), relationship = "one-to-one") |>
+  mutate(diff = m1dm - m1)
+ggplot(loo_diff, aes(N, diff, colour = condition)) +
+  geom_hline(yintercept = 0, linewidth = 0.3) +
+  geom_point(size = 1) +
+  facet_wrap(vars(population), scales = "free_x") +
+  scale_x_log10() +
+  labs(x = "Parent cells in the sample (log scale)", y = "Pointwise elpd_loo, m1dm minus m1", colour = NULL)
+loo_pointwise |>
+  summarise(n_k_above_0.7 = sum(pareto_k > 0.7), max_k = max(pareto_k), .by = c(population, model)) |>
+  knitr::kable(digits = 2, caption = "Pareto k of the pointwise PSIS fits")
+```
+
+## Model criticism: posterior predictive check
+
+Each point compares a sample's observed count with the 90% interval of 400 replicated counts, for cells positive for any marker, cells in patterns with three or four positive markers, and cells positive for all four.
+
+```{r}
+#| label: ppc
+#| fig-width: 7
+#| fig-height: 5.5
+ppc <- ppc |>
+  mutate(inside = observed >= rep_lower & observed <= rep_upper, extreme = mid_p < 0.05 | mid_p > 0.95)
+ggplot(ppc, aes(rep_mean + 1, observed + 1, colour = inside)) +
+  geom_abline(linewidth = 0.3) +
+  geom_linerange(aes(xmin = rep_lower + 1, xmax = rep_upper + 1), linewidth = 0.25, alpha = 0.6) +
+  geom_point(size = 0.8) +
+  facet_grid(model + population ~ statistic) +
+  scale_x_log10() +
+  scale_y_log10() +
+  scale_colour_manual(values = c(`TRUE` = "grey40", `FALSE` = "#D55E00")) +
+  labs(x = "Replicated count + 1 (mean, 90% interval)", y = "Observed count + 1", colour = "Observed inside interval")
+knitr::kable(
+  ppc |>
+    summarise(coverage = mean(inside), frac_extreme_midp = mean(extreme), .by = c(model, population, statistic)) |>
+    arrange(statistic, population, model),
+  digits = 3,
+  caption = "Coverage of the 90% interval (nominal 0.9) and fraction of samples with mid-p below 0.05 or above 0.95 (nominal 0.1)"
+)
+```
+
+The same check by condition shows where the misfit sits: the table gives the median ratio of observed to replicated any-positive count and the share of samples whose observed count falls below the interval.
+
+```{r}
+#| label: ppc-by-condition
+ppc |>
+  filter(statistic == "any_positive") |>
+  left_join(samples, join_by(population, sample_id), relationship = "many-to-one") |>
+  summarise(
+    n = n(),
+    median_obs_over_rep = median(observed / pmax(rep_mean, 1)),
+    frac_below_interval = mean(observed < rep_lower),
+    frac_above_interval = mean(observed > rep_upper),
+    .by = c(population, model, condition)
+  ) |>
+  arrange(population, model, condition) |>
+  knitr::kable(digits = 3)
+```
+
+## Runtime
+
+Wall-clock seconds of each method's main step on 4 CPUs for cytoJointR models and 1 CPU otherwise, with polyICSFlow summed over its three steps.
+
+```{r}
+#| label: runtime
+#| fig-width: 5
+#| fig-height: 3
+rt <- runtime |>
+  filter(step %in% c("fit", "cj_compass", "expand_counts_to_cells", "assignMarkerCombinations", "calcPolyfunctionality")) |>
+  mutate(method = if_else(method == "polyICSFlow", "polyICSFlow_clipped", if_else(method == "COMPASS", "COMPASS", method))) |>
+  summarise(seconds = sum(seconds), .by = c(population, method)) |>
+  mutate(method = as_method(method))
+ggplot(rt, aes(method, seconds, fill = method)) +
+  geom_col(width = 0.7) +
+  geom_text(aes(label = round(seconds)), vjust = -0.3, size = 2.5) +
+  facet_wrap(vars(population)) +
+  scale_fill_manual(values = METHOD_COLOURS) +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.12))) +
+  labs(x = NULL, y = "Wall-clock seconds") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1), legend.position = "none")
+```
+
+## Session
+
+```{r}
+#| label: session
+sessionInfo()
+```

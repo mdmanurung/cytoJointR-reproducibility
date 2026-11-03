@@ -1,0 +1,273 @@
+---
+title: "cytoJointR against COMPASS and polyICSFlow on public TB ICS data"
+format:
+  html:
+    embed-resources: true
+    code-fold: true
+execute:
+  warning: false
+---
+
+Purpose: show the TB real-data benchmark (`scripts/22`, `23`, `31`): TB-status AUC, rank agreement, antigen sanity
+check, model criticism of m1dm and runtimes. Run: `quarto render notebooks/realdata_tb.qmd` from the repo root with
+`R_LIBS=renv/lib` and the R4_51 `PATH`. Inputs: `data/processed/<dataset>/` and `RUN_DIR/<dataset>/`. Outputs: this
+page. CCS is experimental and no statement below rests on it.
+
+```{r}
+#| label: parameters
+# Parameters -------------------------------------------------------------------
+RUN_DIR <- Sys.getenv("TB_RUN_DIR", "runs/2026-11-03_realdata/tb") # run dir of 31_analyse-tb.R, relative to the repo root
+DATASETS <- c(tb_s = "TB_s (MTB-specific)", tb_u = "TB_u (non-specific)", tb_simplecompass = "SimpleCOMPASS (EPTB vs IGRA+)") # data set label
+HEADLINE <- c( # method score pairs drawn in ROC and agreement plots; the first is the reference
+  "m1dm P_RMS_gt_eps", "m1dm RMS_mean", "m1dm CPS_mean", "m1 P_RMS_gt_eps", "C0 P_RMS_gt_eps",
+  "COMPASS FS", "COMPASS PFS", "COMPASS Response",
+  "polyICSFlow_clipped net_sum", "polyICSFlow_unclipped net_sum"
+)
+PPC_LEVEL <- 0.9 # nominal level of the replicate intervals in 31_analyse-tb.R
+```
+
+```{r}
+#| label: setup
+suppressPackageStartupMessages({
+  library(dplyr)
+  library(forcats)
+  library(ggplot2)
+  library(purrr)
+  library(readr)
+  library(stringr)
+  library(tidyr)
+})
+theme_set(theme_bw(base_size = 9))
+rd <- \(ds, f, ...) read_tsv(file.path(here::here(RUN_DIR), ds, f), show_col_types = FALSE, col_types = cols(donor_id = "c", pattern_key = "c", ...))
+by_ds <- \(f, ...) names(DATASETS) |> set_names() |> map(\(ds) rd(ds, f, ...)) |> list_rbind(names_to = "dataset") |> mutate(dataset = fct(dataset, levels = names(DATASETS)))
+method_pal <- c(
+  "m1dm" = "#1b6ca8", "m1" = "#6aa9d8", "C0" = "#8c8c8c", "COMPASS" = "#d95f02",
+  "polyICSFlow_clipped" = "#1b9e77", "polyICSFlow_unclipped" = "#7fc97f"
+)
+col_of <- \(method) {
+  stopifnot("unknown method" = all(method %in% names(method_pal)))
+  method_pal[method]
+}
+```
+
+## Data checks
+
+COMPASS pre-filtered the TB_s and TB_u tables and folded removed patterns into the all-negative count, so the positive counts are lower bounds; the SimpleCOMPASS table is a complete 256-pattern partition.
+
+```{r}
+#| label: data-checks
+prep <- names(DATASETS) |>
+  set_names() |>
+  map(\(ds) read_tsv(file.path(here::here("data/processed"), ds, "prep_log.tsv"), show_col_types = FALSE) |> mutate(across(everything(), as.character))) |>
+  list_rbind(names_to = "dataset") |>
+  pivot_longer(-dataset, names_to = "check", values_to = "value") |>
+  pivot_wider(names_from = dataset, values_from = value)
+knitr::kable(prep)
+```
+
+## TB-status AUC
+
+AUC is the probability that a random case outscores a random non-case; intervals are percentile bootstraps over donors within group (2000 resamples), so with 21 to 40 donors they are wide.
+
+```{r}
+#| label: auc
+auc <- by_ds("auc.tsv") |>
+  mutate(label = paste(method, score))
+auc |>
+  filter(!str_detect(score, "CCS")) |>
+  mutate(across(c(auc, lower, upper), \(v) round(v, 2)), AUC = sprintf("%.2f [%.2f, %.2f]", auc, lower, upper)) |>
+  select(dataset, method, score, AUC, n_case, n_noncase) |>
+  knitr::kable()
+```
+
+```{r}
+#| label: auc-forest
+#| fig-width: 9
+#| fig-height: 6
+auc_plot <- auc |>
+  filter(label %in% HEADLINE) |>
+  mutate(label = fct_rev(fct(label, levels = HEADLINE)))
+ggplot(auc_plot, aes(auc, label)) +
+  geom_vline(xintercept = 0.5, linetype = 2) +
+  geom_pointrange(aes(xmin = lower, xmax = upper)) +
+  facet_wrap(vars(dataset), nrow = 1) +
+  coord_cartesian(xlim = c(0, 1)) +
+  labs(x = "AUC for the case group (bootstrap 95% CI over donors)", y = NULL)
+```
+
+```{r}
+#| label: roc
+#| fig-width: 9
+#| fig-height: 4
+roc_of <- \(wide, column) {
+  s <- wide[[column]]
+  y <- wide$case
+  th <- sort(unique(s), decreasing = TRUE)
+  tibble(
+    column = column,
+    fpr = c(0, map_dbl(th, \(t) mean(s[!y] >= t))),
+    tpr = c(0, map_dbl(th, \(t) mean(s[y] >= t)))
+  )
+}
+wide <- by_ds("donor_wide.tsv")
+roc <- wide |>
+  split(wide$dataset) |>
+  map(\(w) map(HEADLINE, \(h) roc_of(w, h)) |> list_rbind()) |>
+  list_rbind(names_to = "dataset") |>
+  mutate(method = word(column, 1))
+ggplot(roc, aes(fpr, tpr, colour = method, group = column)) +
+  geom_abline(linetype = 2) +
+  geom_step(linewidth = 0.4) +
+  scale_colour_manual(values = method_pal) +
+  facet_wrap(vars(dataset), nrow = 1) +
+  coord_equal() +
+  labs(x = "False positive rate", y = "True positive rate")
+```
+
+## Rank agreement
+
+The Spearman correlation across donors measures whether the methods order donors alike; each point below is one donor.
+
+```{r}
+#| label: agreement
+agr <- by_ds("agreement.tsv") |> mutate(spearman = round(spearman, 2))
+ggplot(agr, aes(a, b, fill = spearman, label = sprintf("%.2f", spearman))) +
+  geom_tile() +
+  geom_text(size = 2) +
+  scale_fill_gradient2(limits = c(-1, 1), midpoint = 0) +
+  facet_wrap(vars(dataset), nrow = 1) +
+  theme(axis.text.x = element_text(angle = 60, hjust = 1)) +
+  labs(x = NULL, y = NULL, fill = "Spearman")
+```
+
+```{r}
+#| label: agreement-scatter
+#| fig-width: 9
+#| fig-height: 8
+others <- setdiff(HEADLINE, HEADLINE[1])
+scatter <- wide |>
+  select(dataset, donor_id, case, all_of(HEADLINE)) |>
+  mutate(across(all_of(HEADLINE), \(v) rank(v) / length(v)), .by = dataset) |>
+  pivot_longer(all_of(others), names_to = "other", values_to = "rank_other") |>
+  mutate(other = fct(other, levels = others))
+ggplot(scatter, aes(.data[[HEADLINE[1]]], rank_other, colour = case)) +
+  geom_point(size = 0.8) +
+  facet_grid(dataset ~ other, labeller = labeller(other = label_wrap_gen(14))) +
+  labs(x = paste("rank of", HEADLINE[1], "(fraction of donors)"), y = "rank of the other score", colour = "case")
+```
+
+## Specific against non-specific antigens
+
+TB_s and TB_u share donors and the unstimulated count, so each donor is one paired point of response magnitude; this is a sanity check, not a comparison of methods.
+
+```{r}
+#| label: s-vs-u
+#| fig-width: 8
+#| fig-height: 4
+su <- wide |>
+  filter(dataset %in% c("tb_s", "tb_u")) |>
+  select(dataset, donor_id, case, `m1dm RMS_mean`, `polyICSFlow_clipped net_sum`, `COMPASS FS`) |>
+  pivot_longer(c(`m1dm RMS_mean`, `polyICSFlow_clipped net_sum`, `COMPASS FS`), names_to = "score") |>
+  pivot_wider(names_from = dataset, values_from = value)
+su |>
+  summarise(
+    median_s = median(tb_s), median_u = median(tb_u),
+    p_wilcoxon_paired = wilcox.test(tb_s, tb_u, paired = TRUE, exact = FALSE)$p.value,
+    spearman = cor(tb_s, tb_u, method = "spearman"),
+    .by = score
+  ) |>
+  knitr::kable(digits = 4)
+ggplot(su, aes(tb_u, tb_s, colour = case)) +
+  geom_abline(linetype = 2) +
+  geom_point(size = 1) +
+  facet_wrap(vars(score), scales = "free") +
+  labs(x = "non-specific antigens (TB_u)", y = "MTB-specific antigens (TB_s)", colour = "QFT positive")
+```
+
+## Overdispersion of m1dm
+
+phi is the Dirichlet-multinomial precision; a posterior far from zero in 1/phi means the counts are more variable than a multinomial allows.
+
+```{r}
+#| label: phi
+#| fig-width: 8
+#| fig-height: 3
+by_ds("phi_summary.tsv") |> mutate(across(where(is.numeric), \(v) signif(v, 3))) |> knitr::kable()
+phi <- by_ds("phi_draws.tsv")
+ggplot(phi, aes(inv_phi)) +
+  geom_histogram(bins = 50) +
+  facet_wrap(vars(dataset), nrow = 1, scales = "free") +
+  labs(x = "1 / phi (0 is a multinomial)", y = "posterior draws")
+```
+
+## LOO, m1dm against m1
+
+Leave-one-sample-out elpd; the observation is one sample, so a Pareto-k above 0.7 marks a sample whose removal moves the donor effects and makes that estimate unreliable.
+
+```{r}
+#| label: loo
+by_ds("loo.tsv") |> mutate(across(where(is.numeric), \(v) round(v, 1))) |> knitr::kable()
+by_ds("loo_compare.tsv") |> mutate(across(where(is.numeric), \(v) round(v, 1))) |> knitr::kable()
+```
+
+## Posterior predictive checks
+
+Replicates come from the structured mean (not from the sample probability, which is conditioned on the observed counts); a model that fits has the observed value inside the 90% interval for about 90% of samples.
+
+```{r}
+#| label: ppc-sample
+#| fig-width: 9
+#| fig-height: 6
+ppc_s <- by_ds("ppc_sample.tsv")
+ppc_s |>
+  summarise(
+    n = n(), coverage_90 = mean(observed >= lower & observed <= upper),
+    frac_p_extreme = mean(p_mid < 0.025 | p_mid > 0.975),
+    .by = c(dataset, model, statistic)
+  ) |>
+  knitr::kable(digits = 2)
+ggplot(ppc_s |> filter(statistic == "any_positive"), aes(rep_mean, observed)) +
+  geom_abline(linetype = 2) +
+  geom_linerange(aes(xmin = lower, xmax = upper), colour = "grey70") +
+  geom_point(aes(colour = condition), size = 0.8) +
+  scale_x_log10() +
+  scale_y_log10() +
+  facet_grid(model ~ dataset, scales = "free") +
+  labs(x = "replicate any-positive count (mean, 90% interval)", y = "observed any-positive count")
+```
+
+```{r}
+#| label: ppc-pattern
+#| fig-width: 9
+#| fig-height: 6
+ppc_p <- by_ds("ppc_pattern.tsv")
+ppc_p |>
+  summarise(
+    n = n(), coverage_90 = mean(observed >= lower & observed <= upper),
+    frac_p_extreme = mean(p_mid < 0.025 | p_mid > 0.975),
+    .by = c(dataset, model, statistic)
+  ) |>
+  knitr::kable(digits = 2)
+ggplot(ppc_p |> filter(statistic == "n_zero_samples"), aes(rep_mean, observed)) +
+  geom_abline(linetype = 2) +
+  geom_linerange(aes(xmin = lower, xmax = upper), colour = "grey70") +
+  geom_point(aes(colour = condition), size = 0.8) +
+  facet_grid(model ~ dataset) +
+  labs(x = "replicate number of samples with zero count (mean, 90% interval)", y = "observed", subtitle = "one point per pattern and condition")
+```
+
+## Runtime
+
+Seconds per method on the same counts; cytoJointR Stan fits use 4 CPUs, the other methods 1.
+
+```{r}
+#| label: runtime
+rt <- bind_rows(
+  by_ds("runtime.tsv"),
+  names(DATASETS) |> set_names() |> map(\(ds) rd(ds, "polyicsflow/runtime.tsv")) |> list_rbind(names_to = "dataset")
+) |>
+  mutate(dataset = fct(as.character(dataset), levels = names(DATASETS)))
+rt |>
+  pivot_wider(names_from = dataset, values_from = seconds, id_cols = c(method, step, cpus)) |>
+  knitr::kable(digits = 1)
+```

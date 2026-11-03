@@ -1,0 +1,218 @@
+---
+title: "Real data: RV144 and HVTN078 vaccine trials"
+format:
+  html:
+    embed-resources: true
+    code-fold: true
+execute:
+  warning: false
+---
+
+```{r}
+#| label: parameters
+# Parameters -------------------------------------------------------------------
+RUN_DIR <- Sys.getenv("VACCINE_RUN_DIR", "runs/2026-11-03_realdata/vaccine") # output of 30_analyse-vaccine.R, relative to the repo root
+PROCESSED <- "data/processed" # 20_prepare-rv144.R, 21_prepare-hvtn078.R
+DATASETS <- c("rv144", "hvtn078")
+```
+
+```{r}
+#| label: setup
+suppressPackageStartupMessages({
+  library(dplyr)
+  library(forcats)
+  library(ggplot2)
+  library(purrr)
+  library(readr)
+  library(stringr)
+  library(tidyr)
+})
+theme_set(theme_bw(base_size = 8))
+root <- here::here()
+read_ds <- \(f, ds = DATASETS) map(set_names(ds), \(d) {
+  p <- file.path(root, RUN_DIR, d, f)
+  if (file.exists(p)) read_tsv(p, show_col_types = FALSE)
+}) |> compact() |> list_rbind(names_to = "dataset")
+METHOD_COLOURS <- c(m1dm = "#D55E00", m1 = "#E69F00", C0 = "#CC79A7", COMPASS = "#0072B2",
+                    polyICSFlow_clipped = "#009E73", polyICSFlow_unclipped = "#999999")
+method_of <- \(x) fct(case_when(
+  str_starts(x, "m1dm") ~ "m1dm", str_starts(x, "m1_") ~ "m1", str_starts(x, "C0") ~ "C0", str_starts(x, "COMPASS") ~ "COMPASS",
+  str_detect(x, "unclipped") ~ "polyICSFlow_unclipped", str_starts(x, "polyICSFlow") ~ "polyICSFlow_clipped"), levels = names(METHOD_COLOURS))
+```
+
+## Data checks
+
+Both tables are COMPASS-filtered (removed patterns were folded into the all-negative count), so the positive-cell frequencies below are lower bounds.
+
+```{r}
+map(DATASETS, \(d) read_tsv(file.path(root, PROCESSED, d, "prep_log.tsv"), show_col_types = FALSE) |>
+      mutate(across(everything(), as.character)) |> pivot_longer(everything()) |> mutate(dataset = d)) |>
+  list_rbind() |> pivot_wider(names_from = dataset, values_from = value) |> knitr::kable()
+```
+
+```{r}
+read_ds("epsilon_check.tsv") |> knitr::kable(digits = 6)
+```
+
+## ROC curves, vaccine vs placebo
+
+Each curve ranks donors by a method's score; the diagonal is chance, and HVTN078 has only five placebo recipients.
+
+```{r}
+#| fig-width: 9
+#| fig-height: 4
+focus <- c("m1dm_P_RMS_gt_eps", "m1dm_RMS_mean", "C0_RMS_mean", "COMPASS_FS", "COMPASS_PFS", "COMPASS_Response",
+           "polyICSFlow_clipped_net_sum")
+read_ds("roc_curves.tsv") |>
+  filter(score_name %in% focus) |>
+  mutate(method = method_of(score_name)) |>
+  ggplot(aes(fpr, tpr, colour = method, linetype = score_name)) +
+  geom_abline(colour = "grey70") +
+  geom_step() +
+  scale_colour_manual(values = METHOD_COLOURS) +
+  facet_wrap(~dataset) +
+  coord_equal() +
+  labs(x = "false-positive rate (placebo)", y = "true-positive rate (vaccine)", linetype = "score")
+```
+
+## AUC with bootstrap CI
+
+The CI resamples donors within vaccine and placebo (2000 replicates); CCS rows are experimental and carry no conclusion.
+
+```{r}
+auc <- read_ds("auc.tsv")
+auc |>
+  transmute(dataset, score_name, experimental, AUC = sprintf("%.3f (%.3f, %.3f)", auc, lower, upper), n_case, n_noncase) |>
+  knitr::kable()
+read_ds("auc_diff.tsv") |> knitr::kable(digits = 3)
+```
+
+## False positives among placebo recipients
+
+Each method is read at its conventional rule: P(RMS > eps) above 0.95, COMPASS Response above 0.5, clipped polyICSFlow net above 0.
+
+```{r}
+#| fig-width: 8
+#| fig-height: 3.5
+fpr <- read_ds("fpr.tsv")
+fpr |>
+  mutate(method = fct(method, levels = names(METHOD_COLOURS))) |>
+  ggplot(aes(method, fpr, fill = method)) +
+  geom_col() +
+  geom_errorbar(aes(ymin = fpr_lower, ymax = fpr_upper), width = 0.25) +
+  geom_text(aes(label = sprintf("%d/%d", n_false_positive, n_placebo)), vjust = -0.5, nudge_y = 0.03, size = 2.5) +
+  scale_fill_manual(values = METHOD_COLOURS, guide = "none") +
+  facet_wrap(~dataset) +
+  coord_cartesian(ylim = c(0, 1.1)) +
+  labs(y = "false-positive rate (Clopper-Pearson 95% CI)", x = NULL) +
+  theme(axis.text.x = element_text(angle = 40, hjust = 1))
+fpr |> select(dataset, method, tpr, tpr_lower, tpr_upper) |> knitr::kable(digits = 3)
+```
+
+## RV144 infection association
+
+Among vaccinees, each point is the odds ratio of infection per SD of a score, adjusted for gender, age and behavioural risk (M1); the family tested with Holm correction is COMPASS FS and PFS plus m1dm RMS and CPS.
+
+```{r}
+#| fig-width: 8
+#| fig-height: 4
+inf <- read_ds("infection.tsv", "rv144")
+if (nrow(inf)) {
+  inf |>
+    mutate(method = method_of(label), label = fct_rev(fct(label)), adj = fct(adj, levels = c("M0", "M1", "M2"))) |>
+    ggplot(aes(or_per_sd, label, colour = method, shape = experimental)) +
+    geom_vline(xintercept = 1, colour = "grey60") +
+    geom_pointrange(aes(xmin = lower, xmax = upper), size = 0.3) +
+    scale_x_log10() +
+    scale_colour_manual(values = METHOD_COLOURS) +
+    facet_wrap(~adj) +
+    labs(x = "odds ratio per SD (95% CI)", y = NULL, shape = "CCS (experimental)")
+  inf |> filter(adj == "M1") |> select(label, n, events, or_per_sd, lower, upper, p, p_holm) |> knitr::kable(digits = 3)
+}
+```
+
+The propagated analysis refits the regression on each of 200 posterior draws and pools by Rubin's rules.
+
+```{r}
+prop <- read_ds("infection_propagated.tsv", "rv144")
+if (nrow(prop)) prop |> select(model, score, adj, draws_used, or_per_sd, lower, upper, p, fraction_missing_info) |> knitr::kable(digits = 3)
+```
+
+## HVTN078 regimen contrast
+
+Regimens T1 to T4 are compared among vaccinees by Kruskal-Wallis and pairwise Wilcoxon tests with Holm adjustment.
+
+```{r}
+read_ds("regimen.tsv", "hvtn078") |> filter(score_name %in% c("m1dm_RMS_mean", "COMPASS_FS", "polyICSFlow_clipped_net_sum")) |>
+  select(score_name, kruskal_p, contrast, p, p_holm) |> knitr::kable(digits = 3)
+```
+
+## Method agreement
+
+Each point is one donor; Spearman correlations are in the table beneath the plots.
+
+```{r}
+#| fig-width: 9
+#| fig-height: 8
+pairs <- list(c("m1dm_RMS_mean", "COMPASS_FS"), c("m1dm_RMS_mean", "polyICSFlow_clipped_net_sum"), c("COMPASS_FS", "polyICSFlow_clipped_net_sum"),
+              c("m1dm_RMS_mean", "C0_RMS_mean"))
+map(DATASETS, \(d) {
+  p <- file.path(root, RUN_DIR, d, "donor_table.tsv")
+  if (!file.exists(p)) return(NULL)
+  dt <- read_tsv(p, show_col_types = FALSE)
+  map(pairs, \(ab) tibble(dataset = d, pair = paste(ab, collapse = " vs "), x = dt[[ab[1]]], y = dt[[ab[2]]], vaccinated = dt$vaccinated)) |> list_rbind()
+}) |> list_rbind() |>
+  ggplot(aes(x, y, colour = vaccinated)) +
+  geom_point(alpha = 0.6, size = 0.8) +
+  facet_wrap(dataset ~ pair, scales = "free", ncol = 4) +
+  labs(x = NULL, y = NULL)
+read_ds("agreement.tsv") |> filter(stratum == "all") |> select(dataset, a, b, spearman) |> knitr::kable(digits = 3)
+```
+
+## Overdispersion phi
+
+The m1dm posterior of phi is shown with the variance inflation it implies over a multinomial at the median parent count.
+
+```{r}
+#| fig-width: 7
+#| fig-height: 3
+read_ds("phi_draws.tsv") |>
+  ggplot(aes(phi)) + geom_histogram(bins = 40, fill = "#D55E00") + scale_x_log10() + facet_wrap(~dataset, scales = "free_y")
+read_ds("phi_summary.tsv") |> knitr::kable(digits = 3)
+```
+
+## Model comparison by LOO
+
+LOO compares m1dm with m1 per sample and per donor; a Pareto k above 0.7 makes an estimate unreliable, so the counts are listed.
+
+```{r}
+read_ds("loo_compare.tsv") |> knitr::kable(digits = 1)
+read_ds("loo.tsv") |> knitr::kable(digits = 1)
+```
+
+## Posterior predictive checks
+
+Observed quantiles of the any-positive count across samples are set against the replicated ones (90% band over replicates), and the table gives interval coverage per statistic.
+
+```{r}
+#| fig-width: 9
+#| fig-height: 6
+read_ds("ppc_quantiles.tsv") |>
+  filter(stat %in% c("any_positive", "degree3plus")) |>
+  ggplot(aes(prob)) +
+  geom_ribbon(aes(ymin = rep_lo, ymax = rep_hi, fill = model), alpha = 0.3) +
+  geom_line(aes(y = rep_median, colour = model)) +
+  geom_point(aes(y = observed)) +
+  scale_y_log10() +
+  facet_grid(dataset + condition ~ stat, scales = "free_y") +
+  labs(x = "quantile across samples", y = "cells (black = observed)")
+read_ds("ppc_summary.tsv") |> select(dataset, model, stat, cond, coverage90, frac_ppp_extreme, obs_total, rep_total) |> knitr::kable(digits = 2)
+```
+
+## Runtime
+
+Wall-clock seconds per method and step; cytoJointR models use 4 CPUs and the others one.
+
+```{r}
+read_ds("runtime.tsv") |> select(dataset, n_donors, method, step, seconds, cpus) |> knitr::kable(digits = 1)
+```
